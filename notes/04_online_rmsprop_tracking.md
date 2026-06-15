@@ -19,10 +19,10 @@ c_e^{-1/2}(\lambda_i+\epsilon/c_e)^{-1/2}.
 The online question is what happens when both \(w_t\) and the exponential moving average \(v_t\) evolve.  The theorem below shows that the online second-moment state remains spectrally equivalent to
 
 \[
-v_{t,i}\asymp \bar c_t\lambda_i,
+v_{t,i}\asymp d_t\lambda_i,
 \]
 
-where \(\bar c_t\) is the same exponential moving average applied to the residual energy
+where \(d_t\) is the same exponential moving average applied to the residual energy
 
 \[
 c_t:=\sigma^2+\|w_t-w^\star\|_H^2.
@@ -33,18 +33,16 @@ Consequently, online RMSProp tracks the time-varying damped spectral preconditio
 \[
 (v_{t,i}+\epsilon)^{-1/2}
 \asymp
-\bar c_t^{-1/2}(\lambda_i+\epsilon/\bar c_t)^{-1/2}.
+d_t^{-1/2}(\lambda_i+\epsilon/d_t)^{-1/2}.
 \]
 
-This gives the online version of the Adam/RMSProp bridge:
+Equivalently, the effective damping level is
 
 \[
-\boxed{q_{\rm eff}=1/2,
-\qquad
-\rho_t=\epsilon/\bar c_t.}
+rho_t:=\epsilon/d_t,
 \]
 
-The clean theorem is first stated for the population EMA.  A robust online estimator gives a high-probability version with the same constants.  Raw RMSProp is then checked empirically in `experiments/online_rmsprop_tracking.py`.
+and the effective preconditioning exponent is \(q_{eff}=1/2\).
 
 ---
 
@@ -82,23 +80,13 @@ The single-sample squared-loss gradient is
 g_t=(\langle x_t,e_t\rangle-\xi_t)x_t.
 \]
 
-The coordinatewise online RMSProp recursion is
-
-\[
-v_{t+1,i}=\beta v_{t,i}+(1-\beta)g_{t,i}^2,
-\qquad
-A_{t+1,i}=(v_{t+1,i}+\epsilon)^{-1/2},
-\qquad
-0\le \beta<1.
-\]
-
 For the population theorem, define
 
 \[
 \nu_{t,i}:=\mathbb E[g_{t,i}^2\mid\mathcal F_t],
 \]
 
-and the predictable EMA
+and the predictable RMSProp EMA
 
 \[
 m_{t+1,i}=\beta m_{t,i}+(1-\beta)\nu_{t,i},
@@ -137,19 +125,19 @@ For every time \(t\) and coordinate \(i\),
 Equivalently, with
 
 \[
-r_{t,i}:=\lambda_i e_{t,i}^2,
+s_{t,i}:=\lambda_i e_{t,i}^2,
 \]
 
 we have
 
 \[
-\nu_{t,i}=\lambda_i(c_t+2r_{t,i}).
+\nu_{t,i}=\lambda_i(c_t+2s_{t,i}).
 \]
 
 Since
 
 \[
-0\le r_{t,i}\le \sum_j\lambda_j e_{t,j}^2\le c_t,
+0\le s_{t,i}\le \sum_j\lambda_j e_{t,j}^2\le c_t,
 \]
 
 we get the uniform bound
@@ -166,13 +154,7 @@ we get the uniform bound
 
 ### Proof
 
-Condition on \(\mathcal F_t\), so \(e_t\) is fixed.  Let
-
-\[
-z_t=\langle x_t,e_t\rangle.
-\]
-
-Then \((z_t,x_{t,i})\) is centered Gaussian with
+Condition on \(\mathcal F_t\), so \(e_t\) is fixed.  Let \(z_t=\langle x_t,e_t\rangle\). Then \((z_t,x_{t,i})\) is centered Gaussian with
 
 \[
 \mathbb E[z_t^2\mid\mathcal F_t]=\|e_t\|_H^2,
@@ -216,7 +198,7 @@ m_{t,i}
 Consequently, for the population preconditioner
 
 \[
-A^{\rm pop}_{t,i}:=(m_{t,i}+\epsilon)^{-1/2},
+A^{pop}_{t,i}:=(m_{t,i}+\epsilon)^{-1/2},
 \]
 
 we have, whenever \(d_t>0\),
@@ -225,7 +207,7 @@ we have, whenever \(d_t>0\),
 \boxed{
 \frac1{\sqrt3}\,d_t^{-1/2}(\lambda_i+\epsilon/d_t)^{-1/2}
 \le
-A^{\rm pop}_{t,i}
+A^{pop}_{t,i}
 \le
 d_t^{-1/2}(\lambda_i+\epsilon/d_t)^{-1/2}.
 }
@@ -235,9 +217,9 @@ Thus population online RMSProp is spectrally equivalent to a time-varying damped
 
 \[
 \boxed{
-A^{\rm pop}_{t,i}\asymp d_t^{-1/2}(\lambda_i+\rho_t)^{-1/2},
+A^{pop}_{t,i}\asymp d_t^{-1/2}(\lambda_i+rho_t)^{-1/2},
 \qquad
-\rho_t:=\epsilon/d_t.
+rho_t:=\epsilon/d_t.
 }
 \]
 
@@ -300,7 +282,7 @@ proves the preconditioner bound.
 
 ## 4. High-probability robust online version
 
-The raw EMA uses \(g_{t,i}^2\), a fourth-order Gaussian-chaos variable.  To avoid heavy-tail distractions, a clean theorem uses a robust per-step estimate \(\widehat\nu_{t,i}\) satisfying
+The raw EMA uses \(g_{t,i}^2\), a fourth-order Gaussian-chaos variable.  A clean high-probability theorem uses a robust per-step estimate \(\widehat\nu_{t,i}\) satisfying
 
 \[
 (1-\zeta)\nu_{t,i}
@@ -333,7 +315,7 @@ Run the robust online EMA
 \widehat m_{t+1,i}=\beta\widehat m_{t,i}+(1-\beta)\widehat\nu_{t,i}.
 \]
 
-The same induction as above gives
+The same induction gives
 
 \[
 \boxed{
@@ -364,25 +346,25 @@ So robust online RMSProp has the same time-varying damped spectral form as the p
 The instantaneous transformed covariance eigenvalue is
 
 \[
-\mu_{t,i}^{\rm rms}:=\lambda_i A_{t,i}.
+\mu_{t,i}^{rms}:=\lambda_i A_{t,i}.
 \]
 
 The tracking theorem gives
 
 \[
 \boxed{
-\mu_{t,i}^{\rm rms}
+\mu_{t,i}^{rms}
 \asymp
-d_t^{-1/2}\lambda_i(\lambda_i+\rho_t)^{-1/2},
+d_t^{-1/2}\lambda_i(\lambda_i+rho_t)^{-1/2},
 \qquad
-\rho_t=\epsilon/d_t.
+rho_t=\epsilon/d_t.
 }
 \]
 
 The scalar \(d_t^{-1/2}\) only rescales the effective learning rate.  The spectral shape is
 
 \[
-\lambda_i(\lambda_i+ho_t)^{-1/2}.
+\lambda_i(\lambda_i+rho_t)^{-1/2}.
 \]
 
 If
@@ -394,21 +376,21 @@ If
 then the instantaneous damping knee is
 
 \[
-m_t\asymp \rho_t^{-1/a},
+m_t\asymp rho_t^{-1/a},
 \]
 
 and
 
 \[
-\lambda_i(\lambda_i+ho_t)^{-1/2}
+\lambda_i(\lambda_i+rho_t)^{-1/2}
 \asymp
 \begin{cases}
 i^{-a/2}, & i\lesssim m_t,\\[3pt]
-\rho_t^{-1/2}i^{-a}, & i\gtrsim m_t.
+rho_t^{-1/2}i^{-a}, & i\gtrsim m_t.
 \end{cases}
 \]
 
-Thus online RMSProp has the same two-slope spectrum as frozen RMSProp with \(q=1/2\), but with time-varying damping \(\rho_t=\epsilon/d_t\).
+Thus online RMSProp has the same two-slope spectrum as frozen RMSProp with \(q=1/2\), but with time-varying damping \(rho_t=\epsilon/d_t\).
 
 ---
 
@@ -419,7 +401,7 @@ Fix an interval \(I\) on which
 \[
 d_t\asymp d_I,
 \qquad
-\rho_t=\epsilon/d_t\asymp \rho_I:=\epsilon/d_I.
+rho_t=\epsilon/d_t\asymp rho_I:=\epsilon/d_I.
 \]
 
 Absorb the scalar \(d_I^{-1/2}\) into the learning rate and define
@@ -431,24 +413,24 @@ n_I:=\sum_{t\in I}\eta_t d_I^{-1/2}.
 On this interval, online RMSProp has the same spectral filters as the frozen damped \(q=1/2\) theorem with
 
 \[
-\mu_i^{\rm rms}=\lambda_i(\lambda_i+ho_I)^{-1/2}.
+\mu_i^{rms}=\lambda_i(\lambda_i+rho_I)^{-1/2}.
 \]
 
 Define
 
 \[
-K_{\rho_I,1/2}(n_I):=\#\{i:\mu_i^{\rm rms}\gtrsim n_I^{-1}\}.
+K_{rho_I,1/2}(n_I):=\#\{i:\mu_i^{rms}\gtrsim n_I^{-1}\}.
 \]
 
 For \(\lambda_i\asymp i^{-a}\),
 
 \[
 \boxed{
-K_{\rho_I,1/2}(n_I)
+K_{rho_I,1/2}(n_I)
 \asymp
 \begin{cases}
-n_I^{2/a}, & n_I\lesssim \rho_I^{-1/2},\\[3pt]
-\rho_I^{-1/(2a)}n_I^{1/a}, & n_I\gtrsim \rho_I^{-1/2}.
+n_I^{2/a}, & n_I\lesssim rho_I^{-1/2},\\[3pt]
+rho_I^{-1/(2a)}n_I^{1/a}, & n_I\gtrsim rho_I^{-1/2}.
 \end{cases}
 }
 \]
@@ -461,9 +443,9 @@ R-\sigma^2
 \approx
 M^{1-b}
 +
-K_{\rho_I,1/2}(n_I)^{1-b}
+K_{rho_I,1/2}(n_I)^{1-b}
 +
-\frac{K_{\rho_I,1/2}(n_I)}{N_{\rm eff}}.
+\frac{K_{rho_I,1/2}(n_I)}{N_{eff}}.
 }
 \]
 
@@ -476,7 +458,7 @@ This is a quasi-static corollary, not yet the final online risk theorem.  It is 
 Assume that on the training horizon the raw or robust online preconditioner satisfies
 
 \[
-A_{t,i}\asymp d_I^{-1/2}(\lambda_i+\rho_I)^{-1/2}
+A_{t,i}\asymp d_I^{-1/2}(\lambda_i+rho_I)^{-1/2}
 \]
 
 uniformly over the interval \(I\).  Because all preconditioners are diagonal in the covariance eigenbasis, the coordinate bias filters involve scalar products
@@ -488,31 +470,31 @@ uniformly over the interval \(I\).  Because all preconditioners are diagonal in 
 If \(\lambda_i A_{t,i}\) is within constant factors of
 
 \[
-d_I^{-1/2}\lambda_i(\lambda_i+\rho_I)^{-1/2},
+d_I^{-1/2}\lambda_i(\lambda_i+rho_I)^{-1/2},
 \]
 
 then these products are comparable to the frozen damped filter with effective time \(n_I\).  The stochastic variance filter is controlled by the same effective dimension.  Hence, under the same stability/geometric-decay assumptions as the fixed spectral theorem,
 
 \[
 \boxed{
-R_M(w_{\rm end(I)})-\sigma^2
+R_M(w_{end(I)})-\sigma^2
 \lesssim
 M^{1-b}
-+B_{\rho_I,1/2}(n_I,M)
-+V_{\rho_I,1/2}(n_I,M),
++B_{rho_I,1/2}(n_I,M)
++V_{rho_I,1/2}(n_I,M),
 }
 \]
 
 where
 
 \[
-B_{\rho,1/2}(n,M)=\sum_{i\le M}\frac{s_i}{1+n\lambda_i(\lambda_i+\rho)^{-1/2}},
+B_{rho,1/2}(n,M)=\sum_{i\le M}\frac{s_i}{1+n\lambda_i(\lambda_i+rho)^{-1/2}},
 \]
 
 and
 
 \[
-V_{\rho,1/2}(n,M)=\frac1{N_{\rm eff}}\sum_{i\le M}\min\{1,n^2\lambda_i^2(\lambda_i+\rho)^{-1}\}.
+V_{rho,1/2}(n,M)=\frac1{N_{eff}}\sum_{i\le M}\min\{1,n^2\lambda_i^2(\lambda_i+rho)^{-1}\}.
 \]
 
 A matching lower sandwich should follow from the lower envelope plus the usual nondegenerate-noise lower bound.  Proving that lower bound for fully raw RMSProp is the next technical target.
@@ -531,16 +513,16 @@ v_{t,i}\asymp d_t\lambda_i
 \Rightarrow
 A_{t,i}\asymp d_t^{-1/2}(\lambda_i+\epsilon/d_t)^{-1/2}
 \Rightarrow
-q_{\rm eff}=1/2.
+q_{eff}=1/2.
 }
 \]
 
-The damping parameter is not fixed; it evolves as
+The damping parameter evolves as
 
 \[
-\rho_t=\epsilon/d_t,
+rho_t=\epsilon/d_t,
 \qquad
 d_t\approx \operatorname{EMA}(\sigma^2+\|w_t-w^\star\|_H^2).
 \]
 
-The next proof target is a full online risk theorem with matching lower bounds, first conditional on the raw-EMA tracking event and then with a direct high-probability proof for raw RMSProp.  After that, the natural extensions are \(\beta_1\)-momentum, Adam bias correction, AdamW decay, and coordinate misalignment.
+The next proof target is a full online risk theorem with matching lower bounds, first conditional on the raw-EMA tracking event and then with a direct high-probability proof for raw RMSProp.  After that, the natural extensions are momentum, Adam bias correction, AdamW decay, and coordinate misalignment.
