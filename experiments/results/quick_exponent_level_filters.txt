@@ -1,0 +1,28 @@
+Command:
+python experiments/exponent_level_filters.py --quick
+
+Output:
+deterministic_filter_exponent_experiment
+dimension=50000
+a=1.5
+b=1.4
+rho=1e-12
+wd=0.01
+n_range=[10.0, 1000.0]
+
+name,observed,predicted,abs_error
+SGD learned-count slope,0.6953,0.6667,0.0287
+Adam/RMSProp learned-count slope,1.3378,1.3333,0.0045
+SGD bias slope,-0.2729,-0.2667,0.0063
+Adam/RMSProp bias slope,-0.5518,-0.5333,0.0184
+AdamW learned-count slope before WD ceiling,1.3434,1.3333,0.0100
+AdamW bias slope before WD ceiling,-0.5034,-0.5333,0.0299
+AdamW learned-count slope after WD ceiling,0.0000,0.0000,0.0000
+
+sample_counts
+n=10.00, K_sgd=4, K_adam=21, K_adamw=21
+n=22.28, K_sgd=7, K_adam=62, K_adamw=62
+n=49.62, K_sgd=13, K_adam=182, K_adamw=182
+n=110.53, K_sgd=23, K_adam=530, K_adamw=464
+n=246.21, K_sgd=39, K_adam=1543, K_adamw=464
+n=548.44, K_sgd=67, K_adam=4489, K_adamw=464
