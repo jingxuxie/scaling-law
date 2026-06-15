@@ -1,0 +1,523 @@
+diff --git a/experiments/lr_sweep_stochastic_alignment.py b/experiments/lr_sweep_stochastic_alignment.py
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/experiments/lr_sweep_stochastic_alignment.py
+@@ -0,0 +1,232 @@
++"""Learning-rate calibrated stochastic alignment sweep.
++
++The previous stochastic alignment experiment showed the predicted q_eff diagnostics,
++but risk slopes can be confounded by optimizer-specific learning-rate constants.
++This runner repeats ``stochastic_alignment_scaling.py`` over learning-rate grids and
++selects the best learning rate for each (case, optimizer) pair.
++
++Quick smoke test
++----------------
++python experiments/lr_sweep_stochastic_alignment.py --quick
++
++Main run
++--------
++python experiments/lr_sweep_stochastic_alignment.py \
++  --cases aligned,band,flat,haar \
++  --optimizers sgd,rmsprop,adam,adamw,coord_oracle,spectral_oracle \
++  --lr-sgd-values 0.01,0.03,0.05,0.1 \
++  --lr-adaptive-values 0.001,0.003,0.005,0.01,0.02 \
++  --dimension 512 \
++  --checkpoints 250,500,1000,2000,4000,8000 \
++  --trials 5 \
++  --batch-size 16 \
++  --outdir experiments/results/stochastic_alignment_lr_sweep
++
++Outputs
++-------
++- lr_sweep_all.csv: one row per (case, optimizer, lr)
++- best_by_final_risk.csv: best learning rate per (case, optimizer)
++- subruns/<case>__<optimizer>__lr_<lr>/summary.csv from the underlying script
++
++Interpretation
++--------------
++Use this to distinguish spectral-exponent effects from scalar learning-rate
++normalization.  The theory predicts q_eff≈1/2 for aligned/band adaptive methods
++and q_eff≈0 for flat/Haar adaptive methods, regardless of the learning rate that
++minimizes final risk.
++"""
++
++from __future__ import annotations
++
++import argparse
++import csv
++import json
++import math
++import subprocess
++import sys
++from pathlib import Path
++from typing import Any
++
++
++def parse_list(text: str, typ=str):
++    return [typ(x.strip()) for x in text.split(",") if x.strip()]
++
++
++def sanitize_float(x: float) -> str:
++    return (f"{x:.6g}").replace("-", "m").replace(".", "p")
++
++
++def read_summary(path: Path) -> list[dict[str, str]]:
++    with path.open(newline="") as f:
++        return list(csv.DictReader(f))
++
++
++def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    if not rows:
++        return
++    keys = list(rows[0].keys())
++    with path.open("w", newline="") as f:
++        writer = csv.DictWriter(f, fieldnames=keys)
++        writer.writeheader()
++        writer.writerows(rows)
++
++
++def final_summary_row(summary_rows: list[dict[str, str]]) -> dict[str, str]:
++    if not summary_rows:
++        raise ValueError("empty summary")
++    return max(summary_rows, key=lambda r: int(float(r["step"])))
++
++
++def build_command(
++    args: argparse.Namespace,
++    case: str,
++    optimizer: str,
++    lr: float,
++    run_outdir: Path,
++) -> list[str]:
++    cmd = [
++        sys.executable,
++        "experiments/stochastic_alignment_scaling.py",
++        "--dimension",
++        str(args.dimension),
++        "--a",
++        str(args.a),
++        "--b",
++        str(args.b),
++        "--sigma",
++        str(args.sigma),
++        "--cases",
++        case,
++        "--optimizers",
++        optimizer,
++        "--checkpoints",
++        args.checkpoints,
++        "--trials",
++        str(args.trials),
++        "--batch-size",
++        str(args.batch_size),
++        "--rho",
++        str(args.rho),
++        "--epsilon",
++        str(args.epsilon),
++        "--beta1",
++        str(args.beta1),
++        "--beta2",
++        str(args.beta2),
++        "--weight-decay",
++        str(args.weight_decay),
++        "--outdir",
++        str(run_outdir),
++    ]
++    if args.no_plots:
++        cmd.append("--no-plots")
++    if optimizer == "sgd":
++        cmd += ["--lr-sgd", str(lr)]
++    else:
++        cmd += ["--lr-adaptive", str(lr)]
++        cmd += ["--lr-sgd", str(args.lr_sgd_baseline)]
++    return cmd
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--outdir", type=Path, default=Path("experiments/results/stochastic_alignment_lr_sweep"))
++    parser.add_argument("--cases", type=str, default="aligned,band,flat,haar")
++    parser.add_argument("--optimizers", type=str, default="sgd,rmsprop,adam,adamw,coord_oracle,spectral_oracle")
++    parser.add_argument("--lr-sgd-values", type=str, default="0.01,0.03,0.05,0.1")
++    parser.add_argument("--lr-adaptive-values", type=str, default="0.001,0.003,0.005,0.01,0.02")
++    parser.add_argument("--lr-sgd-baseline", type=float, default=0.05)
++    parser.add_argument("--dimension", type=int, default=512)
++    parser.add_argument("--a", type=float, default=1.5)
++    parser.add_argument("--b", type=float, default=1.4)
++    parser.add_argument("--sigma", type=float, default=0.1)
++    parser.add_argument("--checkpoints", type=str, default="250,500,1000,2000,4000,8000")
++    parser.add_argument("--trials", type=int, default=5)
++    parser.add_argument("--batch-size", type=int, default=16)
++    parser.add_argument("--rho", type=float, default=1e-8)
++    parser.add_argument("--epsilon", type=float, default=1e-8)
++    parser.add_argument("--beta1", type=float, default=0.9)
++    parser.add_argument("--beta2", type=float, default=0.99)
++    parser.add_argument("--weight-decay", type=float, default=1e-3)
++    parser.add_argument("--resume", action="store_true", help="Skip completed subruns with summary.csv.")
++    parser.add_argument("--dry-run", action="store_true")
++    parser.add_argument("--quick", action="store_true")
++    parser.add_argument("--no-plots", action="store_true")
++    args = parser.parse_args()
++
++    if args.quick:
++        args.outdir = Path("experiments/results/stochastic_alignment_lr_quick")
++        args.cases = "aligned,flat"
++        args.optimizers = "sgd,rmsprop,adam"
++        args.lr_sgd_values = "0.03,0.05"
++        args.lr_adaptive_values = "0.003,0.005"
++        args.dimension = 256
++        args.checkpoints = "200,400,800"
++        args.trials = 2
++        args.batch_size = 8
++        args.no_plots = True
++
++    cases = parse_list(args.cases, str)
++    optimizers = parse_list(args.optimizers, str)
++    lr_sgd_values = parse_list(args.lr_sgd_values, float)
++    lr_adaptive_values = parse_list(args.lr_adaptive_values, float)
++
++    args.outdir.mkdir(parents=True, exist_ok=True)
++    with (args.outdir / "config.json").open("w") as f:
++        json.dump(vars(args), f, indent=2, sort_keys=True, default=str)
++
++    all_rows: list[dict[str, Any]] = []
++    subruns_dir = args.outdir / "subruns"
++
++    for case in cases:
++        for optimizer in optimizers:
++            lr_values = lr_sgd_values if optimizer == "sgd" else lr_adaptive_values
++            for lr in lr_values:
++                run_outdir = subruns_dir / f"{case}__{optimizer}__lr_{sanitize_float(lr)}"
++                summary_path = run_outdir / "summary.csv"
++                cmd = build_command(args, case, optimizer, lr, run_outdir)
++                print("RUN", " ".join(cmd))
++                if not args.dry_run:
++                    if args.resume and summary_path.exists():
++                        print(f"  using existing {summary_path}")
++                    else:
++                        subprocess.run(cmd, check=True)
++                    summary_rows = read_summary(summary_path)
++                    final = final_summary_row(summary_rows)
++                    all_rows.append(
++                        {
++                            "case": case,
++                            "optimizer": optimizer,
++                            "lr": lr,
++                            "final_step": int(float(final["step"])),
++                            "final_risk_mean": float(final["risk_mean"]),
++                            "final_risk_std": float(final["risk_std"]),
++                            "risk_slope_loglog": float(final["risk_slope_loglog"]),
++                            "final_q_eff_mean": float(final["q_eff_mean"]),
++                            "run_outdir": str(run_outdir),
++                        }
++                    )
++
++    if args.dry_run:
++        print("dry-run complete")
++        return
++
++    write_csv(args.outdir / "lr_sweep_all.csv", all_rows)
++
++    best_rows: list[dict[str, Any]] = []
++    for case in cases:
++        for optimizer in optimizers:
++            rows = [r for r in all_rows if r["case"] == case and r["optimizer"] == optimizer]
++            if not rows:
++                continue
++            best = min(rows, key=lambda r: float(r["final_risk_mean"]))
++            best_rows.append(best)
++    write_csv(args.outdir / "best_by_final_risk.csv", best_rows)
++
++    print(f"Wrote {args.outdir / 'lr_sweep_all.csv'}")
++    print(f"Wrote {args.outdir / 'best_by_final_risk.csv'}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/notes/16_scalar_mixing_no_exponent_improvement.md b/notes/16_scalar_mixing_no_exponent_improvement.md
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/notes/16_scalar_mixing_no_exponent_improvement.md
+@@ -0,0 +1,218 @@
++# 16. Scalar-mixing no-exponent-improvement theorem
++
++The stochastic alignment experiments show a useful subtlety.  In flat or Haar-mixed coordinates, Adam/RMSProp diagnostics give
++
++\[
++    q_{\rm eff}\approx 0,
++\]
++
++yet adaptive methods can still have better finite-time constants than vanilla SGD.  This note explains the distinction: scalar or nearly scalar adaptivity can improve normalization, stability, and constants, but it cannot improve the **spectral scaling exponent**.
++
++## 1. Fixed preconditioner statement
++
++Let
++
++\[
++    z\sim \mathcal N(0,\Sigma),
++    \qquad
++    \lambda_i(\Sigma)\asymp i^{-a},
++    \quad a>1.
++\]
++
++Consider a positive definite preconditioner \(P\) satisfying the scalar comparability condition
++
++\[
++\boxed{
++    p_- I\preceq P\preceq p_+ I,
++    \qquad
++    0<p_-\le p_+<\infty.
++}
++\]
++
++The transformed covariance is
++
++\[
++    \widetilde\Sigma=P^{1/2}\Sigma P^{1/2}.
++\]
++
++By Loewner order,
++
++\[
++\boxed{
++    p_-\Sigma\preceq \widetilde\Sigma\preceq p_+\Sigma.
++}
++\]
++
++Therefore, by the min-max principle,
++
++\[
++\boxed{
++    p_-\lambda_i(\Sigma)
++    \le
++    \lambda_i(\widetilde\Sigma)
++    \le
++    p_+\lambda_i(\Sigma).
++}
++\]
++
++Thus
++
++\[
++    \lambda_i(\widetilde\Sigma)\asymp i^{-a}.
++\]
++
++The learned-mode count remains
++
++\[
++\boxed{
++    K(n)=\#\{i:\lambda_i(\widetilde\Sigma)\gtrsim n^{-1}\}
++    \asymp n^{1/a}.
++}
++\]
++
++So a scalar-comparable preconditioner has
++
++\[
++\boxed{q_{\rm eff}=0.}
++\]
++
++## 2. Risk-filter consequence
++
++Under the usual source condition
++
++\[
++    s_i\asymp i^{-b},
++    \qquad b>1,
++\]
++
++the spectral filters are the same as SGD up to constants:
++
++\[
++\boxed{
++    B(n,M)
++    =
++    \sum_{i\le M}\frac{s_i}{1+n\lambda_i(\widetilde\Sigma)}
++    \asymp
++    \sum_{i\le M}\frac{s_i}{1+n\lambda_i(\Sigma)}.
++}
++\]
++
++When \(1<b<a+1\) and \(K(n)<M\),
++
++\[
++\boxed{
++    B(n,M)\asymp n^{-(b-1)/a}.
++}
++\]
++
++Similarly,
++
++\[
++\boxed{
++    V(n,M)
++    \asymp
++    \frac{\min\{M,n^{1/a}\}}{N_{\rm eff}}.
++}
++\]
++
++Hence scalar-comparable adaptivity cannot improve the asymptotic bias or variance exponents over SGD.
++
++## 3. Time-varying scalar-comparable preconditioners
++
++Now suppose the preconditioner varies with time and satisfies
++
++\[
++\boxed{
++    p_{t,-}I\preceq P_t\preceq p_{t,+}I,
++    \qquad
++    \frac{p_{t,+}}{p_{t,-}}\le \kappa
++}
++\]
++
++uniformly over the training horizon.  In the population dynamics, coordinate \(i\) contracts by a product controlled by
++
++\[
++    \sum_{t<N}\gamma_t p_{t,\pm}\lambda_i.
++\]
++
++Define the scalar effective time
++
++\[
++    n_-=\sum_{t<N}\gamma_t p_{t,-},
++    \qquad
++    n_+=\sum_{t<N}\gamma_t p_{t,+}.
++\]
++
++Then
++
++\[
++    n_+\le \kappa n_-.
++\]
++
++The learned set is sandwiched as
++
++\[
++\boxed{
++    \{i:n_-\lambda_i\gtrsim 1\}
++    \subseteq
++    \text{learned modes}
++    \subseteq
++    \{i:n_+\lambda_i\gtrsim 1\}.
++}
++\]
++
++Therefore
++
++\[
++\boxed{
++    K_{\rm learned}\asymp n_-^{1/a}
++}
++\]
++
++up to \(\kappa\)-dependent constants.  Again, the exponent is SGD-like.
++
++## 4. Application to flat, Haar, and isotropic-sketch coordinates
++
++If coordinate variances are flat or bounded,
++
++\[
++    d_{\min}\le \Sigma_{jj}\le d_{\max},
++    \qquad d_{\max}/d_{\min}=O(1),
++\]
++
++then RMSProp/Adam second moments satisfy
++
++\[
++    v_{t,j}\asymp d_t\Sigma_{jj}\asymp d_t
++\]
++
++uniformly over coordinates.  Hence
++
++\[
++    P_{t,j}=(v_{t,j}+\epsilon)^{-1/2}
++\]
++
++is scalar-comparable.  The theorem above applies and predicts
++
++\[
++\boxed{q_{\rm eff}=0.}
++\]
++
++This matches the flat/Haar stochastic alignment results: the direct \(q_{\rm eff}\) diagnostic is close to zero, even when Adam/RMSProp has better finite-time constants than SGD.
++
++## 5. Interpretation for experiments
++
++This theorem clarifies how to read the stochastic training plots.
++
++- If Adam/RMSProp has \(q_{\rm eff}\approx1/2\), then it is changing the spectral scaling exponent.
++- If Adam/RMSProp has \(q_{\rm eff}\approx0\), then any advantage is from scalar learning-rate normalization, stability, momentum, or constants, not from a spectral scaling-law improvement.
++
++Therefore the next experimental step should tune learning rates separately by case and optimizer.  After tuning, compare both final risk and \(q_{\rm eff}\).  The high-impact claim should focus on the robust diagnostic:
++
++\[
++\boxed{
++    \text{spectral exponent improvement occurs only when }q_{\rm eff}>0.
++}
++\]
++
++The risk curves are important, but they must be interpreted together with the spectral diagnostic.
+diff --git a/experiments/results/RESULTS_INTERPRETATION_CURRENT.md b/experiments/results/RESULTS_INTERPRETATION_CURRENT.md
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/experiments/results/RESULTS_INTERPRETATION_CURRENT.md
+@@ -0,0 +1,55 @@
++# Current results interpretation
++
++This note summarizes the current experimental state after the deterministic filter, sketch visibility, stochastic training, and stochastic alignment runs.
++
++## What is strongly supported
++
++1. **Deterministic filter exponents.**  Learned-mode count slopes for SGD, Adam/RMSProp, and AdamW agree closely with the formulas in the notes.  Adam/RMSProp follows the active pre-damping slope and AdamW saturates at the weight-decay horizon.
++
++2. **Visibility controls q_eff.**  In the sketch-visibility sweep:
++   - aligned coordinates give `q_eff_hat` near `0.5`;
++   - flat coordinates give `q_eff_hat` near `0`;
++   - synthetic diagonal profiles give `q_eff_hat ≈ theta/2`;
++   - band-limited rotations give `q_eff_hat` near `0.5`;
++   - Haar/global rotations and isotropic Gaussian sketches give `q_eff_hat` near `0`.
++
++3. **Actual optimizers learn the predicted q_eff diagnostic.**  In stochastic alignment training:
++   - aligned and band-limited coordinates keep RMSProp/Adam/AdamW around `q_eff≈0.5`;
++   - flat and Haar coordinates push RMSProp/Adam/AdamW to `q_eff≈0`;
++   - SGD remains `q_eff=0` by construction.
++
++## Important caveat
++
++In flat/Haar stochastic training, Adam/RMSProp can still beat vanilla SGD in finite-time risk even when `q_eff≈0`.  This is not a contradiction.  It means the optimizer improves scalar normalization, stability, or constants, not the spectral scaling exponent.  The theorem in `notes/16_scalar_mixing_no_exponent_improvement.md` formalizes this point.
++
++## Highest-priority next experiment
++
++Run the learning-rate calibrated stochastic alignment sweep:
++
++```bash
++python experiments/lr_sweep_stochastic_alignment.py \
++  --cases aligned,band,flat,haar \
++  --optimizers sgd,rmsprop,adam,adamw,coord_oracle,spectral_oracle \
++  --lr-sgd-values 0.01,0.03,0.05,0.1 \
++  --lr-adaptive-values 0.001,0.003,0.005,0.01,0.02 \
++  --dimension 512 \
++  --checkpoints 250,500,1000,2000,4000,8000 \
++  --trials 5 \
++  --batch-size 16 \
++  --outdir experiments/results/stochastic_alignment_lr_sweep
++```
++
++This will separate true spectral exponent effects from learning-rate constants.  The key columns will be:
++
++```text
++case, optimizer, lr, final_risk_mean, risk_slope_loglog, final_q_eff_mean
++```
++
++The main expected pattern is:
++
++```text
++aligned/band: RMSProp/Adam/AdamW final_q_eff_mean ≈ 0.5
++flat/Haar:    RMSProp/Adam/AdamW final_q_eff_mean ≈ 0
++```
++
++After LR tuning, compare best final risk and best slopes within each case.  The paper claim should emphasize `q_eff` and spectral visibility, not only raw risk curves.
