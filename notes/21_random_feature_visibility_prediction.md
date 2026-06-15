@@ -2,7 +2,7 @@
 
 The current theory shows that coordinatewise adaptive optimizers change scaling
 exponents only through spectral information visible to their coordinatewise
-second moments.  This note states the random-feature version of that principle.
+second moments. This note states the random-feature version of that principle.
 
 ## Setup
 
@@ -30,7 +30,7 @@ For coordinatewise RMSProp/Adam, the gradient-second-moment bridge gives
     v_j\asymp d\,\Sigma_{jj},
 \]
 
-up to a scalar residual-energy factor.  Therefore the diagonal preconditioner is
+up to a scalar residual-energy factor. Therefore the diagonal preconditioner is
 
 \[
     P_j\asymp (\Sigma_{jj}+\rho)^{-1/2}.
@@ -76,14 +76,14 @@ Under the spectral-comparability hypothesis, the transformed covariance obeys
 \boxed{
     \lambda_i(\widetilde\Sigma)
     \asymp
-    \lambda_i(\Sigma)(\lambda_i(\Sigma)^\theta+ho)^{-1/2}.
+    \lambda_i(\Sigma)(\lambda_i(\Sigma)^\theta+\rho)^{-1/2}.
 }
 \]
 
 Thus, before the damping knee,
 
 \[
-    \lambda_i(\widetilde\Sigma)\asymp i^{-a(1-	heta/2)},
+    \lambda_i(\widetilde\Sigma)\asymp i^{-a(1-\theta/2)},
 \]
 
 and
@@ -101,7 +101,7 @@ The learned-mode count is
 K_{\rho,\theta}(n)
 \asymp
 \begin{cases}
-    n^{1/[a(1-	heta/2)]},
+    n^{1/[a(1-\theta/2)]},
     & n\lesssim \rho^{-(1/\theta-1/2)},\\[4pt]
     \rho^{-1/(2a)}n^{1/a},
     & n\gtrsim \rho^{-(1/\theta-1/2)}.
