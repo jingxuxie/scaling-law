@@ -1,0 +1,18 @@
+{
+  "a_values": "1.5",
+  "alignment_dimensions": "256",
+  "b_values": "1.4",
+  "dimension": 50000,
+  "include_random": true,
+  "mode": "all",
+  "n_max": 1000.0,
+  "n_min": 10.0,
+  "no_plots": false,
+  "num_n": 24,
+  "outdir": "",
+  "quick": true,
+  "rho_values": "1e-12",
+  "run_name": "",
+  "seed": 0,
+  "wd_values": "0,1e-2"
+}

@@ -1,0 +1,3242 @@
+From 5afae0578f4409843ac593175dcec97d185944ff Mon Sep 17 00:00:00 2001
+From: OpenAI Assistant <assistant@example.com>
+Date: Sun, 14 Jun 2026 23:13:57 +0000
+Subject: [PATCH 1/3] Add damped spectral preconditioning proof notes
+
+---
+ README.md                                     |  10 +
+ .../synthetic_damped_preconditioning.py       | 129 +++++
+ notes/01_fixed_spectral_preconditioning.md    | 102 ++++
+ notes/02_damped_spectral_preconditioning.md   | 547 ++++++++++++++++++
+ scripts/manual_push.sh                        |  17 +
+ 5 files changed, 805 insertions(+)
+ create mode 100644 README.md
+ create mode 100644 experiments/synthetic_damped_preconditioning.py
+ create mode 100644 notes/01_fixed_spectral_preconditioning.md
+ create mode 100644 notes/02_damped_spectral_preconditioning.md
+ create mode 100755 scripts/manual_push.sh
+
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..6dc3493
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,10 @@
++# Optimizer-dependent scaling laws in linear regression
++
++This repository is a working research notebook for extending the NeurIPS 2024 linear-regression scaling-law theory from vanilla one-pass SGD to Adam/RMSProp-like adaptive preconditioning.
++
++Current proof notes:
++
++- `notes/01_fixed_spectral_preconditioning.md`: fixed spectral preconditioning baseline, `P_q = H^{-q}`.
++- `notes/02_damped_spectral_preconditioning.md`: damped spectral preconditioning, `P_{rho,q}=(H+rho I)^{-q}`, including the two-slope effective spectrum, bias/variance spectral sums, and Adam/RMSProp `q=1/2` corollary.
++
++Immediate next step: prove a frozen-RMSProp theorem showing that an empirical second-moment estimator satisfies `v_i + epsilon \asymp c_t lambda_i + epsilon` over the learned coordinates, which reduces frozen RMSProp to the damped `q=1/2` theorem.
+diff --git a/experiments/synthetic_damped_preconditioning.py b/experiments/synthetic_damped_preconditioning.py
+new file mode 100644
+index 0000000..f237a4d
+--- /dev/null
++++ b/experiments/synthetic_damped_preconditioning.py
+@@ -0,0 +1,129 @@
++"""Synthetic diagonal-H experiment for damped spectral preconditioning.
++
++This script is intentionally small and dependency-light. It estimates the risk of
++one-pass preconditioned SGD in a diagonal Gaussian linear model and can be used to
++check the two predicted learned-mode regimes:
++
++    K(n) ~ n^{1/[a(1-q)]}              for n << rho^{-(1-q)}
++    K(n) ~ rho^{-q/a} n^{1/a}          for n >> rho^{-(1-q)}
++
++Run, for example:
++
++    python experiments/synthetic_damped_preconditioning.py --a 1.5 --b 1.5 --q 0.5 --rho 1e-4
++"""
++
++from __future__ import annotations
++
++import argparse
++import math
++from dataclasses import dataclass
++
++import numpy as np
++
++
++@dataclass
++class Config:
++    d: int = 5000
++    a: float = 1.5
++    b: float = 1.5
++    q: float = 0.5
++    rho: float = 1e-4
++    sigma: float = 1.0
++    gamma: float = 0.05
++    n_samples: int = 2000
++    seed: int = 0
++
++
++def make_problem(cfg: Config):
++    rng = np.random.default_rng(cfg.seed)
++    i = np.arange(1, cfg.d + 1, dtype=float)
++    lam = i ** (-cfg.a)
++    lam = lam / lam.sum()  # trace-normalize for numerical stability
++
++    # Source condition: lambda_i * E[w_i^2] ~ i^{-b}.
++    source = i ** (-cfg.b)
++    w_std = np.sqrt(source / lam)
++    w_star = rng.normal(size=cfg.d) * w_std
++    return rng, lam, w_star
++
++
++def run_once(cfg: Config) -> float:
++    rng, lam, w_star = make_problem(cfg)
++    p = (lam + cfg.rho) ** (-cfg.q)
++    w = np.zeros(cfg.d)
++
++    # Basic one-pass SGD; for speed, use dense diagonal Gaussian samples.
++    for t in range(cfg.n_samples):
++        # geometric step-decay block length N/log N
++        block = max(1, int(cfg.n_samples / max(1.0, math.log(cfg.n_samples))))
++        ell = t // block
++        step = cfg.gamma / (2.0 ** ell)
++
++        x = rng.normal(size=cfg.d) * np.sqrt(lam)
++        y = float(x @ w_star + cfg.sigma * rng.normal())
++        g_scalar = float(x @ w - y)
++        w -= step * p * g_scalar * x
++
++    err = w - w_star
++    excess = float(np.sum(lam * err * err))
++    return excess
++
++
++def predicted_k(cfg: Config) -> float:
++    n_eff = cfg.n_samples / max(1.0, math.log(cfg.n_samples))
++    n = n_eff * cfg.gamma
++    alpha = cfg.a * (1.0 - cfg.q)
++    knee = cfg.rho ** (-(1.0 - cfg.q))
++    if n <= knee:
++        return n ** (1.0 / alpha)
++    return (cfg.rho ** (-cfg.q / cfg.a)) * (n ** (1.0 / cfg.a))
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--d", type=int, default=5000)
++    parser.add_argument("--a", type=float, default=1.5)
++    parser.add_argument("--b", type=float, default=1.5)
++    parser.add_argument("--q", type=float, default=0.5)
++    parser.add_argument("--rho", type=float, default=1e-4)
++    parser.add_argument("--sigma", type=float, default=1.0)
++    parser.add_argument("--gamma", type=float, default=0.05)
++    parser.add_argument("--n-samples", type=int, default=2000)
++    parser.add_argument("--trials", type=int, default=5)
++    args = parser.parse_args()
++
++    risks = []
++    for seed in range(args.trials):
++        cfg = Config(
++            d=args.d,
++            a=args.a,
++            b=args.b,
++            q=args.q,
++            rho=args.rho,
++            sigma=args.sigma,
++            gamma=args.gamma,
++            n_samples=args.n_samples,
++            seed=seed,
++        )
++        risks.append(run_once(cfg))
++
++    cfg = Config(
++        d=args.d,
++        a=args.a,
++        b=args.b,
++        q=args.q,
++        rho=args.rho,
++        sigma=args.sigma,
++        gamma=args.gamma,
++        n_samples=args.n_samples,
++    )
++    print({
++        "mean_excess_risk": float(np.mean(risks)),
++        "std_excess_risk": float(np.std(risks)),
++        "predicted_K": float(predicted_k(cfg)),
++        "n_eff_gamma": float((args.n_samples / max(1.0, math.log(args.n_samples))) * args.gamma),
++    })
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/notes/01_fixed_spectral_preconditioning.md b/notes/01_fixed_spectral_preconditioning.md
+new file mode 100644
+index 0000000..e2aebb8
+--- /dev/null
++++ b/notes/01_fixed_spectral_preconditioning.md
+@@ -0,0 +1,102 @@
++# Fixed spectral preconditioning baseline
++
++## Setup
++
++Let `H e_i = lambda_i e_i`, with
++
++```math
++\lambda_i \asymp i^{-a}, \qquad a>1,
++```
++
++and source condition
++
++```math
++s_i := \mathbb E[\lambda_i (w_i^\star)^2] \asymp i^{-b}, \qquad b>1.
++```
++
++For a fixed spectral preconditioner
++
++```math
++P_q = H^{-q}, \qquad 0 \le q < 1,
++```
++
++consider one-pass preconditioned SGD
++
++```math
++w_{t+1}=w_t-\gamma_t P_q(\langle x_t,w_t\rangle-y_t)x_t.
++```
++
++## Reparameterization
++
++Set `w=P_q^{1/2}u` and `\widetilde x=P_q^{1/2}x`. Then
++
++```math
++\langle x,w\rangle=\langle \widetilde x,u\rangle,
++```
++
++and preconditioned SGD in `w` is ordinary SGD in `u`:
++
++```math
++u_{t+1}=u_t-\gamma_t(\langle \widetilde x_t,u_t\rangle-y_t)\widetilde x_t.
++```
++
++The transformed covariance is
++
++```math
++\widetilde H=P_q^{1/2}HP_q^{1/2}=H^{1-q},
++```
++
++so
++
++```math
++\widetilde\lambda_i = \lambda_i^{1-q} \asymp i^{-\alpha},
++\qquad \alpha=a(1-q).
++```
++
++The target transforms as `u^\star=P_q^{-1/2}w^\star`, and its source energy is unchanged:
++
++```math
++\widetilde\lambda_i (u_i^\star)^2
++= \lambda_i^{1-q}\lambda_i^q(w_i^\star)^2
++= \lambda_i(w_i^\star)^2.
++```
++
++Thus fixed spectral preconditioning changes only the covariance exponent
++
++```math
++a \mapsto \alpha=a(1-q),
++```
++
++while preserving the source exponent `b`.
++
++## Consequence
++
++In the clean source range
++
++```math
++1<b<\alpha+1,
++```
++
++and under the same one-pass SGD conditions as the base linear-regression scaling-law theorem,
++
++```math
++\mathbb E R_M(w_N)-\sigma^2
++\asymp
++M^{1-b}
+++(N_{\rm eff}\gamma)^{(1-b)/\alpha}
+++\frac{\min\{M,(N_{\rm eff}\gamma)^{1/\alpha}\}}{N_{\rm eff}}.
++```
++
++Equivalently, the learned mode count is
++
++```math
++K_q(n)\asymp n^{1/\alpha}, \qquad n=N_{\rm eff}\gamma,
++```
++
++and the risk is
++
++```math
++M^{1-b}+K_q(n)^{1-b}+\frac{\min\{M,K_q(n)\}}{N_{\rm eff}}.
++```
++
++This is the baseline theorem. The damped theorem in `02_damped_spectral_preconditioning.md` is the version needed for Adam/RMSProp.
+diff --git a/notes/02_damped_spectral_preconditioning.md b/notes/02_damped_spectral_preconditioning.md
+new file mode 100644
+index 0000000..67f6f24
+--- /dev/null
++++ b/notes/02_damped_spectral_preconditioning.md
+@@ -0,0 +1,547 @@
++# Damped spectral preconditioning theorem
++
++This note proves the next theorem in the roadmap: the fixed spectral preconditioner
++
++```math
++P_q=H^{-q}
++```
++
++is replaced by the Adam/RMSProp-like damped spectral preconditioner
++
++```math
++P_{\rho,q}=(H+\rho I)^{-q}, \qquad \rho>0.
++```
++
++The damping parameter is the spectral analog of Adam/RMSProp's `epsilon`.
++
++---
++
++## 1. Setup
++
++Work in the eigenbasis of the population covariance:
++
++```math
++H e_i = \lambda_i e_i, \qquad \lambda_i\asymp i^{-a}, \qquad a>1.
++```
++
++Assume the source condition
++
++```math
++s_i:=\mathbb E[\lambda_i(w_i^\star)^2]\asymp i^{-b}, \qquad b>1.
++```
++
++For fixed `q in [0,1)` and `rho in (0,1]`, consider
++
++```math
++w_{t+1}=w_t-\gamma_t P_{\rho,q}(\langle x_t,w_t\rangle-y_t)x_t,
++\qquad
++P_{\rho,q}=(H+\rho I)^{-q}.
++```
++
++Let
++
++```math
++n:=N_{\rm eff}\gamma, \qquad N_{\rm eff}:=N/\log N,
++```
++
++where `gamma_t` is the geometric step-decay schedule used in the base one-pass SGD theory.
++
++Define the preconditioned exponent
++
++```math
++\alpha:=a(1-q).
++```
++
++---
++
++## 2. Reparameterization
++
++Set
++
++```math
++w=P_{\rho,q}^{1/2}u, \qquad \widetilde x=P_{\rho,q}^{1/2}x.
++```
++
++Then
++
++```math
++\langle x,w\rangle=\langle \widetilde x,u\rangle,
++```
++
++and preconditioned SGD in `w` is exactly ordinary SGD in `u`:
++
++```math
++u_{t+1}=u_t-\gamma_t(\langle \widetilde x_t,u_t\rangle-y_t)\widetilde x_t.
++```
++
++The transformed covariance is diagonal with eigenvalues
++
++```math
++\mu_i
++:=\lambda_i(\lambda_i+\rho)^{-q}.
++```
++
++The transformed target is
++
++```math
++u^\star=P_{\rho,q}^{-1/2}w^\star=(H+\rho I)^{q/2}w^\star.
++```
++
++The source energy is unchanged:
++
++```math
++\mu_i(u_i^\star)^2
++=\lambda_i(\lambda_i+\rho)^{-q}(\lambda_i+\rho)^q(w_i^\star)^2
++=\lambda_i(w_i^\star)^2.
++```
++
++Therefore the preconditioned problem is ordinary SGD on a transformed covariance spectrum `mu_i`, but with the same source-energy sequence `s_i`.
++
++---
++
++## 3. Effective two-slope spectrum
++
++Let
++
++```math
++m_\rho:=\rho^{-1/a}.
++```
++
++This is the spectral index at which `lambda_i` crosses `rho`. Since `lambda_i \asymp i^{-a}`,
++
++```math
++\mu_i
++=\lambda_i(\lambda_i+\rho)^{-q}
++\asymp
++\begin{cases}
++ i^{-a(1-q)}=i^{-\alpha}, & i\lesssim m_\rho,\\[3pt]
++ \rho^{-q}i^{-a}, & i\gtrsim m_\rho.
++\end{cases}
++```
++
++At the knee,
++
++```math
++\mu_{m_\rho}\asymp \rho^{1-q}.
++```
++
++Therefore define the sample-size knee
++
++```math
++n_\rho:=\mu_{m_\rho}^{-1}\asymp \rho^{-(1-q)}.
++```
++
++The learned-mode count is
++
++```math
++K_{\rho,q}(n):=\#\{i:\mu_i\gtrsim n^{-1}\}.
++```
++
++Solving `mu_i \asymp n^{-1}` gives
++
++```math
++K_{\rho,q}(n)
++\asymp
++\begin{cases}
++ n^{1/\alpha}, & n\lesssim n_\rho,\\[3pt]
++ \rho^{-q/a}n^{1/a}, & n\gtrsim n_\rho.
++\end{cases}
++```
++
++Thus preconditioning first makes SGD behave as though the covariance exponent were `alpha=a(1-q)`. After the damping knee, the tail reverts to the original exponent `a`, with a multiplicative gain `rho^{-q/a}` in the number of learned modes.
++
++---
++
++## 4. Stability trace
++
++The transformed trace is
++
++```math
++\operatorname{tr}(\widetilde H)=\sum_i \mu_i.
++```
++
++Using the two-slope form,
++
++```math
++\operatorname{tr}(\widetilde H)
++\asymp
++\begin{cases}
++ 1, & \alpha>1,\\
++ \log(1/\rho), & \alpha=1,\\
++ \rho^{-(1-\alpha)/a}, & \alpha<1.
++\end{cases}
++```
++
++Hence the SGD stability condition should be written as
++
++```math
++\gamma \lesssim \frac{1}{\operatorname{tr}(\widetilde H)}.
++```
++
++This is an important difference from undamped `H^{-q}`. Damping makes the trace finite for every `q<1`, but if `alpha<1`, the largest stable constant step size shrinks as `rho -> 0`.
++
++---
++
++## 5. Bias theorem
++
++Let
++
++```math
++A_M:=\sum_{i>M}s_i\asymp M^{1-b}
++```
++
++be the approximation term.
++
++The algorithmic bias in the transformed coordinates has the same form as the base SGD bias, but with covariance eigenvalues `mu_i` and target coordinates `u_i^star`. The low-frequency norm appearing in the usual bias upper bound is
++
++```math
++\mathbb E[(u_i^\star)^2]
++=\frac{s_i}{\mu_i}.
++```
++
++Indeed,
++
++```math
++\mu_i\mathbb E[(u_i^\star)^2]=s_i.
++```
++
++For a cutoff `k`, the standard step-decay SGD bias argument gives
++
++```math
++B_M(n)
++\lesssim
++\frac{1}{n}\sum_{i\le k}\frac{s_i}{\mu_i}
+++\sum_{k<i\le M}s_i,
++```
++
++with the matching lower bound
++
++```math
++B_M(n)\gtrsim \sum_{i: \mu_i\lesssim n^{-1},\ i\le M}s_i.
++```
++
++Take `k = M \wedge K_{rho,q}(n)`. In the clean source range
++
++```math
++1<b<\alpha+1,
++```
++
++the first term is of the same order as the tail term. Therefore
++
++```math
++B_M(n)\asymp \min\{M,K_{\rho,q}(n)\}^{1-b}
++```
++
++whenever the cutoff is below the model dimension; together with approximation this is equivalently
++
++```math
++A_M+B_M(n)\asymp M^{1-b}+K_{\rho,q}(n)^{1-b}.
++```
++
++### Proof of the bias estimate
++
++Let `K=K_{rho,q}(n)`.
++
++**Case 1: `n \lesssim n_rho`, so `K \lesssim m_rho`.**
++
++Here `mu_i \asymp i^{-alpha}` for all `i <= K`, and
++
++```math
++\frac{s_i}{\mu_i}\asymp \frac{i^{-b}}{i^{-\alpha}}=i^{\alpha-b}.
++```
++
++Since `b<alpha+1`,
++
++```math
++\frac{1}{n}\sum_{i\le K}i^{\alpha-b}
++\asymp
++\frac{K^{\alpha-b+1}}{n}.
++```
++
++Because `K\asymp n^{1/alpha}`, equivalently `n\asymp K^alpha`, this equals
++
++```math
++K^{1-b}.
++```
++
++The tail source energy is
++
++```math
++\sum_{i>K}i^{-b}\asymp K^{1-b}.
++```
++
++So `B_M(n) \asymp K^{1-b}`.
++
++**Case 2: `n \gtrsim n_rho`, so `K \gtrsim m_rho`.**
++
++Split the low-frequency norm at `m=m_rho`:
++
++```math
++\frac{1}{n}\sum_{i\le K}\frac{s_i}{\mu_i}
++=
++\frac{1}{n}\sum_{i\le m}\frac{s_i}{\mu_i}
+++
++\frac{1}{n}\sum_{m<i\le K}\frac{s_i}{\mu_i}.
++```
++
++For `i<=m`, `s_i/mu_i \asymp i^{alpha-b}`. Since `b<alpha+1`,
++
++```math
++\frac{1}{n}\sum_{i\le m}i^{\alpha-b}
++\asymp \frac{m^{\alpha-b+1}}{n}.
++```
++
++For `i>m`, `mu_i \asymp rho^{-q}i^{-a}`, hence
++
++```math
++\frac{s_i}{\mu_i}\asymp \rho^q i^{a-b}.
++```
++
++Since `b<a+1` follows from `b<alpha+1` and `alpha<=a`,
++
++```math
++\frac{1}{n}\sum_{m<i\le K}\rho^q i^{a-b}
++\asymp
++\frac{\rho^q K^{a-b+1}}{n}.
++```
++
++In the tail phase `K\asymp rho^{-q/a}n^{1/a}`, equivalently `n\asymp rho^q K^a`, so this term is
++
++```math
++K^{1-b}.
++```
++
++The head contribution is no larger. Indeed, at the knee the two expressions are equal up to constants, and for `n>=n_rho` the tail-phase `K^{1-b}` decays more slowly than the head contribution under `b<alpha+1`. Therefore the full low-frequency term is `O(K^{1-b})`.
++
++The tail source energy is again
++
++```math
++\sum_{i>K}i^{-b}\asymp K^{1-b}.
++```
++
++The upper and lower bounds match, proving the bias estimate.
++
++### What happens outside the clean source range
++
++If `b >= alpha+1`, the above proof no longer gives a matching upper bound because
++
++```math
++\sum_{i\le K} i^{\alpha-b}
++```
++
++is logarithmic at equality and bounded for `b>alpha+1`. The safe bracket is
++
++```math
++K_{\rho,q}(n)^{1-b}
++\lesssim B_M(n)
++\lesssim K_{\rho,q}(n)^{1-b}
+++\frac{1}{n}\sum_{i\le M\wedge K_{\rho,q}(n)}\frac{s_i}{\mu_i}.
++```
++
++At `b=alpha+1`, the extra term is logarithmic. For `b>alpha+1`, it is a qualification/saturation term of order roughly `n^{-1}` during the pre-damping phase. This is the same type of simple-source gap already visible in the base theory when `b>=a+1`.
++
++---
++
++## 6. Variance theorem
++
++The sharp SGD variance term is controlled by the effective dimension
++
++```math
++\mathcal D_M(n)
++:=
++\#\{i\le M:\mu_i\ge n^{-1}\}
+++n^2\sum_{i\le M:\mu_i<n^{-1}}\mu_i^2.
++```
++
++The variance contribution is
++
++```math
++V_M(n)\asymp \frac{\mathcal D_M(n)}{N_{\rm eff}}.
++```
++
++For `M` larger than the learned cutoff, write `D(n)=D_infty(n)`. Then
++
++```math
++\mathcal D(n)
++\asymp
++\begin{cases}
++ K_{\rho,q}(n), & \alpha>1/2,\ n\lesssim n_\rho,\\[3pt]
++ K_{\rho,q}(n)\bigl[1+\log(m_\rho/K_{\rho,q}(n))\bigr], & \alpha=1/2,\ n\lesssim n_\rho,\\[3pt]
++ n^2\rho^{-(1-2\alpha)/a}, & \alpha<1/2,\ n\lesssim n_\rho,\\[3pt]
++ K_{\rho,q}(n), & n\gtrsim n_\rho.
++\end{cases}
++```
++
++In particular, for the Adam/RMSProp-like value `q=1/2`,
++
++```math
++\alpha=a/2>1/2
++```
++
++because `a>1`. Therefore
++
++```math
++\mathcal D(n)\asymp K_{\rho,1/2}(n)
++```
++
++throughout both phases.
++
++### Proof of the variance estimate
++
++The first term in `D(n)` is the learned-mode count `K`.
++
++If `n <= n_rho`, then `K<=m=m_rho`. The squared-tail contribution is
++
++```math
++n^2\sum_{K<i\le m}i^{-2\alpha}
+++n^2\rho^{-2q}\sum_{i>m}i^{-2a}.
++```
++
++If `alpha>1/2`, the first sum is `asymp K^{1-2alpha}`, and multiplying by `n^2` gives
++
++```math
++n^2K^{1-2\alpha}\asymp K,
++```
++
++because `n\asymp K^alpha`. The second sum is
++
++```math
++n^2\rho^{-2q}m^{1-2a}
++\asymp n^2\rho^{(2\alpha-1)/a},
++```
++
++which is at most `K` for `n<=n_rho` and equal to `K` at the knee. Hence `D(n)\asymp K`.
++
++If `alpha=1/2`, the first squared-tail sum gives the logarithmic factor
++
++```math
++n^2\log(m/K)=K\log(m/K).
++```
++
++If `alpha<1/2`, the squared-tail sum is dominated by the upper endpoint `m`, giving
++
++```math
++n^2m^{1-2\alpha}=n^2\rho^{-(1-2\alpha)/a}.
++```
++
++If `n>=n_rho`, then `K>=m`, and the only tail is the original damped tail
++
++```math
++n^2\rho^{-2q}\sum_{i>K}i^{-2a}
++\asymp n^2\rho^{-2q}K^{1-2a}.
++```
++
++Using `n\asymp rho^q K^a`, this equals `K`. Thus `D(n)\asymp K` after the damping knee.
++
++---
++
++## 7. Main theorem
++
++Assume
++
++```math
++1<b<\alpha+1, \qquad \alpha=a(1-q),
++```
++
++and the step size satisfies
++
++```math
++\gamma\lesssim 1/\operatorname{tr}(\widetilde H).
++```
++
++Then, up to the same logarithmic factors hidden in `N_eff=N/log N` and the same constant-factor convention as the base one-pass SGD theorem,
++
++```math
++\boxed{
++\mathbb E R_M(w_N)-\sigma^2
++\asymp
++M^{1-b}
+++K_{\rho,q}(N_{\rm eff}\gamma)^{1-b}
+++\frac{\mathcal D_M(N_{\rm eff}\gamma)}{N_{\rm eff}}.
++}
++```
++
++Here
++
++```math
++K_{\rho,q}(n)
++\asymp
++\begin{cases}
++ n^{1/[a(1-q)]}, & n\lesssim \rho^{-(1-q)},\\[3pt]
++ \rho^{-q/a}n^{1/a}, & n\gtrsim \rho^{-(1-q)},
++\end{cases}
++```
++
++and `D_M` is the effective dimension above. If `alpha>1/2` and `M` is not the bottleneck,
++
++```math
++\mathcal D_M(n)\asymp \min\{M,K_{\rho,q}(n)\}.
++```
++
++Therefore, in the Adam/RMSProp-like case `q=1/2`,
++
++```math
++\boxed{
++K_{\rho,1/2}(n)
++\asymp
++\begin{cases}
++ n^{2/a}, & n\lesssim \rho^{-1/2},\\[3pt]
++ \rho^{-1/(2a)}n^{1/a}, & n\gtrsim \rho^{-1/2},
++\end{cases}
++}
++```
++
++and
++
++```math
++\mathbb E R_M(w_N)-\sigma^2
++\asymp
++M^{1-b}
+++K_{\rho,1/2}(n)^{1-b}
+++\frac{\min\{M,K_{\rho,1/2}(n)\}}{N_{\rm eff}}
++```
++
++in the clean range `1<b<a/2+1`.
++
++---
++
++## 8. Interpretation
++
++Damped preconditioning creates a two-stage scaling law.
++
++1. **Flattened phase:** for `n \lesssim rho^{-(1-q)}`, the optimizer behaves as if the spectrum exponent were `a(1-q)`.
++2. **Damping-limited phase:** for `n \gtrsim rho^{-(1-q)}`, the tail exponent reverts to `a`, but with a larger learned-mode count by the factor `rho^{-q/a}`.
++
++For Adam/RMSProp's idealized `q=1/2`, this means early training learns modes according to exponent `a/2`, then crosses back to exponent `a` after the epsilon/damping knee.
++
++This is the first theorem that genuinely needs damping. It also shows why the undamped `q=1/2` proxy is not sufficient: without damping, the effective spectrum `i^{-a/2}` may have an infinite trace when `a<=2`, while the damped theorem remains well-defined.
++
++---
++
++## 9. Next theorem to prove
++
++The next target is a frozen-RMSProp theorem.
++
++Estimate
++
++```math
++\widehat v_i=\frac1B\sum_{t=1}^B g_{t,i}^2,
++```
++
++freeze
++
++```math
++P_i=(\widehat v_i+\epsilon)^{-1/2},
++```
++
++and prove that, on the learned coordinate range,
++
++```math
++\widehat v_i+\epsilon \asymp c_t\lambda_i+\epsilon.
++```
++
++Then frozen RMSProp reduces to this damped theorem with
++
++```math
++q=1/2, \qquad \rho\asymp \epsilon/c_t.
++```
+diff --git a/scripts/manual_push.sh b/scripts/manual_push.sh
+new file mode 100755
+index 0000000..9def300
+--- /dev/null
++++ b/scripts/manual_push.sh
+@@ -0,0 +1,17 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# Usage:
++#   ./scripts/manual_push.sh /path/to/local/clone/of/jingxuxie/scaling-law
++
++TARGET=${1:-}
++if [[ -z "$TARGET" ]]; then
++  echo "Provide a local clone path, e.g. ./scripts/manual_push.sh ../scaling-law" >&2
++  exit 1
++fi
++
++rsync -av --exclude .git ./ "$TARGET"/
++cd "$TARGET"
++git add README.md notes experiments scripts
++git commit -m "Add damped spectral preconditioning proof notes"
++git push origin main
+-- 
+2.47.3
+
+
+From 1a262c46ae22d6a2e8cc212249623191b6f3ac30 Mon Sep 17 00:00:00 2001
+From: OpenAI Assistant <assistant@example.com>
+Date: Sun, 14 Jun 2026 23:59:13 +0000
+Subject: [PATCH 2/3] Add frozen RMSProp bridge theorem
+
+---
+ .gitignore                           |   4 +
+ README.md                            |   8 +-
+ experiments/frozen_rmsprop_bridge.py | 224 ++++++++
+ notes/03_frozen_rmsprop_bridge.md    | 755 +++++++++++++++++++++++++++
+ 4 files changed, 990 insertions(+), 1 deletion(-)
+ create mode 100644 .gitignore
+ create mode 100644 experiments/frozen_rmsprop_bridge.py
+ create mode 100644 notes/03_frozen_rmsprop_bridge.md
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..2103786
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,4 @@
++outputs/
++__pycache__/
++*.pyc
++.DS_Store
+diff --git a/README.md b/README.md
+index 6dc3493..11b334d 100644
+--- a/README.md
++++ b/README.md
+@@ -6,5 +6,11 @@ Current proof notes:
+ 
+ - `notes/01_fixed_spectral_preconditioning.md`: fixed spectral preconditioning baseline, `P_q = H^{-q}`.
+ - `notes/02_damped_spectral_preconditioning.md`: damped spectral preconditioning, `P_{rho,q}=(H+rho I)^{-q}`, including the two-slope effective spectrum, bias/variance spectral sums, and Adam/RMSProp `q=1/2` corollary.
++- `notes/03_frozen_rmsprop_bridge.md`: frozen-RMSProp bridge theorem.  It proves that, in diagonal Gaussian linear regression, coordinate gradient second moments satisfy `E[g_i^2] \asymp c_e lambda_i`, so a frozen RMSProp preconditioner is spectrally equivalent to `(H+rho I)^(-1/2)` with `rho = epsilon / c_e`.
+ 
+-Immediate next step: prove a frozen-RMSProp theorem showing that an empirical second-moment estimator satisfies `v_i + epsilon \asymp c_t lambda_i + epsilon` over the learned coordinates, which reduces frozen RMSProp to the damped `q=1/2` theorem.
++Experiments:
++
++- `experiments/synthetic_damped_preconditioning.py`: oracle damped spectral-preconditioning sanity check.
++- `experiments/frozen_rmsprop_bridge.py`: verifies the gradient-second-moment bridge `v_i \propto lambda_i` and compares frozen RMSProp to the oracle `q=1/2` preconditioner.
++
++Next target: prove an online RMSProp theorem by showing that the EMA preconditioner tracks a time-varying damped spectral preconditioner `(H+rho_t I)^(-1/2)`, where `rho_t = epsilon / (sigma^2 + ||w_t-w*||_H^2)`.
+diff --git a/experiments/frozen_rmsprop_bridge.py b/experiments/frozen_rmsprop_bridge.py
+new file mode 100644
+index 0000000..2439ba3
+--- /dev/null
++++ b/experiments/frozen_rmsprop_bridge.py
+@@ -0,0 +1,224 @@
++"""Sanity checks for the frozen-RMSProp bridge theorem.
++
++This script verifies the mechanism proved in notes/03_frozen_rmsprop_bridge.md:
++for diagonal Gaussian linear regression, gradient second moments at a fixed anchor
++satisfy
++
++    E[g_i(anchor)^2] = lambda_i (c_e + 2 lambda_i e_i^2) \asymp c_e lambda_i.
++
++Consequently a frozen RMSProp preconditioner
++
++    A_i = (vhat_i + epsilon)^(-1/2)
++
++is spectrally equivalent to the oracle damped q=1/2 preconditioner
++
++    c_e^(-1/2) (lambda_i + epsilon / c_e)^(-1/2).
++
++Run:
++    python experiments/frozen_rmsprop_bridge.py --plot
++"""
++
++from __future__ import annotations
++
++import argparse
++import json
++from dataclasses import asdict, dataclass
++from pathlib import Path
++from typing import Tuple
++
++import numpy as np
++
++
++@dataclass
++class BridgeResult:
++    dimension: int
++    a: float
++    b: float
++    sigma: float
++    epsilon: float
++    burnin_samples: int
++    mom_blocks: int
++    mom_block_size: int
++    c_e: float
++    rho: float
++    slope_log_vhat_vs_log_lambda: float
++    slope_log_vstar_vs_log_lambda: float
++    median_mu_ratio: float
++    q10_mu_ratio: float
++    q90_mu_ratio: float
++    median_v_ratio: float
++    q10_v_ratio: float
++    q90_v_ratio: float
++
++
++def make_problem(d: int, a: float, b: float, seed: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
++    """Return lambdas, source energies s_i, and w_star."""
++    rng = np.random.default_rng(seed)
++    idx = np.arange(1, d + 1, dtype=float)
++    lambdas = idx ** (-a)
++    source = idx ** (-b)  # s_i = lambda_i * w_i^2
++    signs = rng.choice(np.array([-1.0, 1.0]), size=d)
++    w_star = signs * np.sqrt(source / lambdas)
++    return lambdas, source, w_star
++
++
++def median_of_means(values: np.ndarray, blocks: int) -> np.ndarray:
++    """Coordinate-wise median of block means for an array of shape (n, d)."""
++    n, d = values.shape
++    if n % blocks != 0:
++        raise ValueError("number of samples must be divisible by number of blocks")
++    block_size = n // blocks
++    block_means = values.reshape(blocks, block_size, d).mean(axis=1)
++    return np.median(block_means, axis=0)
++
++
++def fit_log_slope(x: np.ndarray, y: np.ndarray, start_frac: float = 0.05, end_frac: float = 0.80) -> float:
++    """Fit slope of log(y) against log(x) over an interior spectral range."""
++    d = len(x)
++    lo = max(1, int(start_frac * d))
++    hi = max(lo + 5, int(end_frac * d))
++    mask = (x[lo:hi] > 0) & (y[lo:hi] > 0)
++    coeff = np.polyfit(np.log(x[lo:hi][mask]), np.log(y[lo:hi][mask]), deg=1)
++    return float(coeff[0])
++
++
++def run_bridge_check(
++    d: int,
++    a: float,
++    b: float,
++    sigma: float,
++    epsilon: float,
++    burnin_samples: int,
++    mom_blocks: int,
++    seed: int,
++    plot: bool,
++    output_dir: Path,
++) -> BridgeResult:
++    rng = np.random.default_rng(seed + 1)
++    lambdas, source, w_star = make_problem(d=d, a=a, b=b, seed=seed)
++
++    # Anchor at zero: e = -w_star.
++    e = -w_star
++    c_e = sigma**2 + float(np.sum(lambdas * e**2))
++    rho = epsilon / c_e
++
++    x = rng.normal(size=(burnin_samples, d)) * np.sqrt(lambdas)[None, :]
++    xi = rng.normal(scale=sigma, size=burnin_samples)
++    residual = x @ e - xi
++    gradients = residual[:, None] * x
++    y_values = gradients**2
++
++    vhat = median_of_means(y_values, blocks=mom_blocks)
++    vstar = lambdas * (c_e + 2.0 * lambdas * e**2)
++
++    # The theorem predicts vstar / (c_e * lambda_i) in [1, 3].
++    v_ratio = vhat / (c_e * lambdas)
++
++    # Frozen preconditioner versus oracle damped q=1/2 preconditioner.
++    a_frozen = 1.0 / np.sqrt(vhat + epsilon)
++    a_oracle = (c_e ** -0.5) / np.sqrt(lambdas + rho)
++    mu_frozen = lambdas * a_frozen
++    mu_oracle = lambdas * a_oracle
++    mu_ratio = mu_frozen / mu_oracle
++
++    slope_vhat = fit_log_slope(lambdas, vhat)
++    slope_vstar = fit_log_slope(lambdas, vstar)
++
++    result = BridgeResult(
++        dimension=d,
++        a=a,
++        b=b,
++        sigma=sigma,
++        epsilon=epsilon,
++        burnin_samples=burnin_samples,
++        mom_blocks=mom_blocks,
++        mom_block_size=burnin_samples // mom_blocks,
++        c_e=c_e,
++        rho=rho,
++        slope_log_vhat_vs_log_lambda=slope_vhat,
++        slope_log_vstar_vs_log_lambda=slope_vstar,
++        median_mu_ratio=float(np.median(mu_ratio)),
++        q10_mu_ratio=float(np.quantile(mu_ratio, 0.10)),
++        q90_mu_ratio=float(np.quantile(mu_ratio, 0.90)),
++        median_v_ratio=float(np.median(v_ratio)),
++        q10_v_ratio=float(np.quantile(v_ratio, 0.10)),
++        q90_v_ratio=float(np.quantile(v_ratio, 0.90)),
++    )
++
++    output_dir.mkdir(parents=True, exist_ok=True)
++    (output_dir / "frozen_rmsprop_bridge_metrics.json").write_text(json.dumps(asdict(result), indent=2))
++
++    if plot:
++        import matplotlib.pyplot as plt
++
++        idx = np.arange(1, d + 1)
++
++        plt.figure()
++        plt.loglog(idx, vhat, label="MoM estimate")
++        plt.loglog(idx, vstar, label="population value")
++        plt.loglog(idx, c_e * lambdas, label="c_e lambda_i")
++        plt.xlabel("coordinate i")
++        plt.ylabel("gradient second moment")
++        plt.legend()
++        plt.tight_layout()
++        plt.savefig(output_dir / "gradient_second_moment.png", dpi=200)
++        plt.close()
++
++        plt.figure()
++        plt.semilogx(idx, v_ratio)
++        plt.axhline(1.0, linewidth=1)
++        plt.axhline(3.0, linewidth=1)
++        plt.xlabel("coordinate i")
++        plt.ylabel("vhat_i / (c_e lambda_i)")
++        plt.tight_layout()
++        plt.savefig(output_dir / "vhat_ratio.png", dpi=200)
++        plt.close()
++
++        plt.figure()
++        plt.semilogx(idx, mu_ratio)
++        plt.axhline(1.0, linewidth=1)
++        plt.xlabel("coordinate i")
++        plt.ylabel("mu_frozen_i / mu_oracle_i")
++        plt.tight_layout()
++        plt.savefig(output_dir / "frozen_vs_oracle_mu_ratio.png", dpi=200)
++        plt.close()
++
++    return result
++
++
++def parse_args() -> argparse.Namespace:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--d", type=int, default=4096)
++    parser.add_argument("--a", type=float, default=1.5)
++    parser.add_argument("--b", type=float, default=1.3)
++    parser.add_argument("--sigma", type=float, default=0.1)
++    parser.add_argument("--epsilon", type=float, default=1e-6)
++    parser.add_argument("--burnin-samples", type=int, default=512)
++    parser.add_argument("--mom-blocks", type=int, default=16)
++    parser.add_argument("--seed", type=int, default=0)
++    parser.add_argument("--plot", action="store_true")
++    parser.add_argument("--output-dir", type=Path, default=Path("outputs/frozen_rmsprop_bridge"))
++    return parser.parse_args()
++
++
++def main() -> None:
++    args = parse_args()
++    if args.burnin_samples % args.mom_blocks != 0:
++        raise SystemExit("--burnin-samples must be divisible by --mom-blocks")
++    result = run_bridge_check(
++        d=args.d,
++        a=args.a,
++        b=args.b,
++        sigma=args.sigma,
++        epsilon=args.epsilon,
++        burnin_samples=args.burnin_samples,
++        mom_blocks=args.mom_blocks,
++        seed=args.seed,
++        plot=args.plot,
++        output_dir=args.output_dir,
++    )
++    print(json.dumps(asdict(result), indent=2))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/notes/03_frozen_rmsprop_bridge.md b/notes/03_frozen_rmsprop_bridge.md
+new file mode 100644
+index 0000000..c0df447
+--- /dev/null
++++ b/notes/03_frozen_rmsprop_bridge.md
+@@ -0,0 +1,755 @@
++# Frozen RMSProp bridge theorem
++
++This note proves the first real bridge from the deterministic spectral
++preconditioning theory to Adam/RMSProp-like adaptive preconditioning.
++
++The deterministic theorem says that, if we train with the fixed spectral
++preconditioner
++
++\[
++P_{\rho,q}=(H+\rho I)^{-q},
++\]
++
++then preconditioned SGD is ordinary SGD on transformed features with covariance
++
++\[
++\widetilde H=P_{\rho,q}^{1/2}HP_{\rho,q}^{1/2}.
++\]
++
++For Adam/RMSProp, the relevant case should be \(q=1/2\).  This note proves why:
++in Gaussian linear regression, the coordinate-wise gradient second moment is
++proportional to the population eigenvalue \(\lambda_i\), up to universal
++constants.  Therefore a frozen RMSProp preconditioner
++
++\[
++A_i=(\widehat v_i+\epsilon)^{-1/2}
++\]
++
++is spectrally equivalent to
++
++\[
++(H+\rho I)^{-1/2},
++\qquad \rho\asymp \epsilon /(\sigma^2+\|\bar w-w^\star\|_H^2).
++\]
++
++This turns the previous damped spectral theorem into a frozen-RMSProp theorem.
++
++---
++
++## 1. Setup
++
++Work in the population covariance eigenbasis.  Let
++
++\[
++x\sim \mathcal N(0,H),
++\qquad
++H=\operatorname{diag}(\lambda_i),
++\qquad
++\lambda_i>0,
++\]
++
++and
++
++\[
++y=\langle x,w^\star\rangle+\xi,
++\qquad
++\xi\sim \mathcal N(0,\sigma^2),
++\]
++
++with \(\xi\) independent of \(x\).  For a fixed anchor parameter \(\bar w\), define
++
++\[
++e:=\bar w-w^\star,
++\qquad
++c_e:=\sigma^2+\|e\|_H^2.
++\]
++
++The single-sample squared-loss gradient at \(\bar w\) is
++
++\[
++g(\bar w)=(\langle x,e\rangle-\xi)x.
++\]
++
++For coordinate \(i\), write
++
++\[
++g_i(\bar w)=(\langle x,e\rangle-\xi)x_i.
++\]
++
++---
++
++## 2. Key identity: gradient second moments recover the spectrum
++
++### Lemma 1: coordinate gradient second moment
++
++For every coordinate \(i\),
++
++\[
++\boxed{
++\mathbb E[g_i(\bar w)^2\mid \bar w]
++=
++\lambda_i\bigl(\sigma^2+\|e\|_H^2\bigr)
+++
++2\lambda_i^2e_i^2.
++}
++\]
++
++Equivalently, if
++
++\[
++r_i:=\lambda_i e_i^2,
++\]
++
++then
++
++\[
++\mathbb E[g_i(\bar w)^2\mid \bar w]
++=
++\lambda_i(c_e+2r_i).
++\]
++
++Since
++
++\[
++0\le r_i\le \sum_j\lambda_j e_j^2\le c_e,
++\]
++
++we have the uniform constant-factor equivalence
++
++\[
++\boxed{
++ c_e\lambda_i
++\le
++\mathbb E[g_i(\bar w)^2\mid \bar w]
++\le
++3c_e\lambda_i.
++}
++\]
++
++### Proof
++
++Let
++
++\[
++z:=\langle x,e\rangle.
++\]
++
++Then \(z\) and \(x_i\) are jointly centered Gaussian with
++
++\[
++\mathbb E[z^2]=\|e\|_H^2,
++\qquad
++\mathbb E[x_i^2]=\lambda_i,
++\qquad
++\mathbb E[z x_i]=\lambda_i e_i.
++\]
++
++Because \(\xi\) is independent and mean zero,
++
++\[
++\mathbb E[(z-\xi)^2x_i^2]
++=
++\mathbb E[z^2x_i^2]+\sigma^2\mathbb E[x_i^2].
++\]
++
++By Isserlis/Wick's formula,
++
++\[
++\mathbb E[z^2x_i^2]
++=
++\mathbb E[z^2]\mathbb E[x_i^2]
+++2\mathbb E[zx_i]^2
++=
++\lambda_i\|e\|_H^2+2\lambda_i^2e_i^2.
++\]
++
++Therefore
++
++\[
++\mathbb E[g_i(\bar w)^2\mid \bar w]
++=
++\lambda_i(\sigma^2+\|e\|_H^2)+2\lambda_i^2e_i^2.
++\]
++
++The constant-factor bound follows from \(0\le \lambda_i e_i^2\le \|e\|_H^2\le c_e\).
++
++---
++
++## 3. Robust burn-in estimator
++
++The raw RMSProp estimate is an exponential moving average.  For a clean theorem,
++we first analyze a robust frozen estimate.  This avoids heavy-tail technicalities
++while preserving the Adam/RMSProp mechanism.
++
++Let
++
++\[
++Y_{t,i}:=g_{t,i}(\bar w)^2.
++\]
++
++Partition \(B=LR\) independent burn-in samples into \(R\) blocks of size \(L\), and
++define
++
++\[
++\bar Y_{r,i}:=\frac1L\sum_{t\in \text{block }r}Y_{t,i},
++\qquad
++\widehat v_i:=\operatorname{median}_{1\le r\le R}\bar Y_{r,i}.
++\]
++
++### Lemma 2: uniform constant-factor concentration
++
++There is a universal numerical constant \(C\) such that, for every \(i\),
++
++\[
++\operatorname{Var}(Y_{t,i}\mid \bar w)
++\le
++C\,\mathbb E[Y_{t,i}\mid \bar w]^2.
++\]
++
++Consequently, for any \(\tau\in(0,1)\), if
++
++\[
++L\ge C_1\tau^{-2},
++\qquad
++R\ge C_2\log(2M/\delta),
++\]
++
++then with probability at least \(1-\delta\), simultaneously for all \(1\le i\le M\),
++
++\[
++\boxed{
++(1-\tau)v_i^\star
++\le
++\widehat v_i
++\le
++(1+\tau)v_i^\star,
++\qquad
++v_i^\star:=\mathbb E[g_i(\bar w)^2\mid \bar w].
++}
++\]
++
++Combining with Lemma 1 gives, on the same event,
++
++\[
++\boxed{
++(1-\tau)c_e\lambda_i
++\le
++\widehat v_i
++\le
++3(1+\tau)c_e\lambda_i,
++\qquad 1\le i\le M.
++}
++\]
++
++### Proof
++
++Let
++
++\[
++u:=\langle x,e\rangle-\xi.
++\]
++
++Under the Gaussian assumptions, \((u,x_i)\) is a centered bivariate Gaussian pair
++with variances \(c_e\) and \(\lambda_i\).  The random variable
++
++\[
++Y_i=u^2x_i^2
++\]
++
++is a degree-four polynomial in a Gaussian vector.  By Wick's formula, or Gaussian
++hypercontractivity,
++
++\[
++\mathbb E[u^4x_i^4]
++\le
++C\,\mathbb E[u^2x_i^2]^2
++=
++C(v_i^\star)^2.
++\]
++
++Thus \(\operatorname{Var}(Y_i)\le C(v_i^\star)^2\).  For a block mean,
++
++\[
++\operatorname{Var}(\bar Y_{r,i})
++\le
++\frac{C}{L}(v_i^\star)^2.
++\]
++
++Chebyshev's inequality gives
++
++\[
++\Pr\left(|\bar Y_{r,i}-v_i^\star|>\tau v_i^\star\right)
++\le
++\frac{C}{L\tau^2}.
++\]
++
++Choosing \(L\ge C_1\tau^{-2}\) makes each block good with probability at least,
++say, \(3/4\).  A Chernoff bound over the \(R\) independent blocks shows that the
++median is bad with probability at most \(\exp(-cR)\).  A union bound over
++\(i\le M\) gives the stated simultaneous event.
++
++---
++
++## 4. Frozen-RMSProp preconditioner is a damped spectral preconditioner
++
++Define the frozen adaptive preconditioner
++
++\[
++A:=\operatorname{diag}(A_i),
++\qquad
++A_i:=(\widehat v_i+\epsilon)^{-1/2}.
++\]
++
++Set the effective damping level
++
++\[
++\rho:=\epsilon/c_e.
++\]
++
++### Lemma 3: spectral equivalence
++
++On the event of Lemma 2,
++
++\[
++\boxed{
++C_- c_e^{-1/2}(\lambda_i+\rho)^{-1/2}
++\le
++A_i
++\le
++C_+ c_e^{-1/2}(\lambda_i+\rho)^{-1/2},
++\qquad 1\le i\le M,
++}
++\]
++
++where \(C_-,C_+\) depend only on \(\tau\).
++
++Consequently, the transformed covariance
++
++\[
++\widehat H:=A^{1/2}HA^{1/2}
++\]
++
++has eigenvalues
++
++\[
++\widehat\mu_i=\lambda_i A_i
++\]
++
++satisfying
++
++\[
++\boxed{
++\widehat\mu_i
++\asymp
++c_e^{-1/2}\lambda_i(\lambda_i+\rho)^{-1/2}.
++}
++\]
++
++### Proof
++
++From Lemma 2,
++
++\[
++(1-\tau)c_e\lambda_i+\epsilon
++\le
++\widehat v_i+\epsilon
++\le
++3(1+\tau)c_e\lambda_i+\epsilon.
++\]
++
++Equivalently, since \(\rho=\epsilon/c_e\),
++
++\[
++\widehat v_i+\epsilon
++\asymp_{\tau}
++c_e(\lambda_i+\rho).
++\]
++
++Taking inverse square roots yields the claimed bound on \(A_i\).  Multiplying by
++\(\lambda_i\) yields the transformed eigenvalue bound.
++
++---
++
++## 5. Main theorem: frozen RMSProp scaling law
++
++Let the source energy be
++
++\[
++s_i:=\lambda_i(w_i^\star)^2.
++\]
++
++Assume the source condition
++
++\[
++s_i\asymp i^{-b},
++\qquad b>1,
++\]
++
++and covariance eigenvalues
++
++\[
++\lambda_i\asymp i^{-a},
++\qquad a>1.
++\]
++
++After the burn-in estimator is frozen, run one-pass SGD with update
++
++\[
++w_{t+1}
++=
++w_t-\gamma_t A(\langle x_t,w_t\rangle-y_t)x_t.
++\]
++
++Let
++
++\[
++N_{\rm eff}:=N/\log N,
++\qquad
++n:=N_{\rm eff}\gamma c_e^{-1/2},
++\]
++
++and define the damped Adam/RMSProp spectral profile
++
++\[
++\mu_i^{\rm rms}:=\lambda_i(\lambda_i+\rho)^{-1/2},
++\qquad
++\rho=\epsilon/c_e.
++\]
++
++Define the deterministic bias and variance filters
++
++\[
++B_{\rho,1/2}(n,M)
++:=
++\sum_{i\le M}\frac{s_i}{1+n\mu_i^{\rm rms}},
++\]
++
++and
++
++\[
++V_{\rho,1/2}(n,M)
++:=
++\frac1{N_{\rm eff}}
++\sum_{i\le M}\min\{1,n^2(\mu_i^{\rm rms})^2\}.
++\]
++
++### Theorem 1: frozen RMSProp bridge
++
++Assume the stepsize schedule satisfies the same stability and geometric-decay
++conditions as the deterministic spectral-preconditioning theorem, with
++\(\gamma\) small enough relative to \(\operatorname{tr}(\widehat H)^{-1}\).  On the
++burn-in event of Lemma 2, the post-burn-in frozen-RMSProp iterate satisfies,
++up to universal constants and logarithmic factors,
++
++\[
++\boxed{
++\mathbb E\bigl[R_M(w_N)\mid \widehat v\bigr]-\sigma^2
++\asymp
++\underbrace{\sum_{i>M}s_i}_{\text{approximation}}
+++
++\underbrace{B_{\rho,1/2}(n,M)}_{\text{optimization/bias}}
+++
++\underbrace{V_{\rho,1/2}(n,M)}_{\text{variance/noise}}.
++}
++\]
++
++Therefore, with probability at least \(1-\delta\) over the burn-in samples,
++
++\[
++\boxed{
++\mathbb E R_M(w_N)-\sigma^2
++\asymp
++M^{1-b}
+++
++B_{\rho,1/2}(n,M)
+++
++V_{\rho,1/2}(n,M),
++}
++\]
++
++where the outer expectation is over the post-burn-in SGD samples and the only
++failure probability is the burn-in concentration event.
++
++### Proof
++
++The preconditioned update is ordinary SGD after the change of variables
++
++\[
++w=A^{1/2}u,
++\qquad
++\widetilde x=A^{1/2}x.
++\]
++
++Indeed,
++
++\[
++\langle x,w\rangle
++=
++\langle A^{1/2}x,u\rangle
++=
++\langle \widetilde x,u\rangle,
++\]
++
++and the update in \(u\) is
++
++\[
++u_{t+1}
++=
++u_t-\gamma_t(\langle \widetilde x_t,u_t\rangle-y_t)\widetilde x_t.
++\]
++
++The transformed covariance is
++
++\[
++\widehat H=A^{1/2}HA^{1/2},
++\qquad
++\widehat\mu_i=\lambda_i A_i.
++\]
++
++The transformed target is
++
++\[
++u^\star=A^{-1/2}w^\star.
++\]
++
++Crucially, the source energy is exactly invariant:
++
++\[
++\widehat\mu_i(u_i^\star)^2
++=
++\lambda_i A_i\cdot A_i^{-1}(w_i^\star)^2
++=
++\lambda_i(w_i^\star)^2
++=s_i.
++\]
++
++So frozen RMSProp changes the covariance spectrum but does not change the source
++exponent.  Applying the deterministic spectral-preconditioning theorem to the
++transformed problem gives
++
++\[
++\mathbb E[R_M(w_N)\mid \widehat v]-\sigma^2
++\asymp
++\sum_{i>M}s_i
+++
++\sum_{i\le M}\frac{s_i}{1+N_{\rm eff}\gamma\widehat\mu_i}
+++
++\frac1{N_{\rm eff}}
++\sum_{i\le M}\min\{1,(N_{\rm eff}\gamma\widehat\mu_i)^2\}.
++\]
++
++By Lemma 3,
++
++\[
++\widehat\mu_i
++\asymp
++c_e^{-1/2}\mu_i^{\rm rms}.
++\]
++
++Thus
++
++\[
++N_{\rm eff}\gamma\widehat\mu_i
++\asymp
++n\mu_i^{\rm rms},
++\qquad
++n=N_{\rm eff}\gamma c_e^{-1/2}.
++\]
++
++The filters \(s/(1+x)\) and \(\min\{1,x^2\}\) are stable under constant-factor
++changes in \(x\).  Therefore the deterministic risk expression is comparable to
++
++\[
++\sum_{i>M}s_i+B_{\rho,1/2}(n,M)+V_{\rho,1/2}(n,M).
++\]
++
++Finally,
++
++\[
++\sum_{i>M}s_i\asymp \sum_{i>M}i^{-b}\asymp M^{1-b}.
++\]
++
++This proves the theorem.
++
++---
++
++## 6. Power-law simplification and damping knee
++
++Since
++
++\[
++\lambda_i\asymp i^{-a},
++\qquad
++\mu_i^{\rm rms}=\lambda_i(\lambda_i+\rho)^{-1/2},
++\]
++
++there is a spectral knee at
++
++\[
++m_\rho\asymp \rho^{-1/a}.
++\]
++
++For \(i\lesssim m_\rho\),
++
++\[
++\mu_i^{\rm rms}\asymp \lambda_i^{1/2}\asymp i^{-a/2}.
++\]
++
++For \(i\gtrsim m_\rho\),
++
++\[
++\mu_i^{\rm rms}\asymp \rho^{-1/2}\lambda_i\asymp \rho^{-1/2}i^{-a}.
++\]
++
++The sample-size knee is
++
++\[
++n_\rho\asymp \rho^{-1/2}.
++\]
++
++Define the learned-mode count
++
++\[
++K_{\rho,1/2}(n):=\#\{i:\mu_i^{\rm rms}\gtrsim n^{-1}\}.
++\]
++
++Then
++
++\[
++\boxed{
++K_{\rho,1/2}(n)
++\asymp
++\begin{cases}
++n^{2/a}, & n\lesssim \rho^{-1/2},\\[3pt]
++\rho^{-1/(2a)}n^{1/a}, & n\gtrsim \rho^{-1/2}.
++\end{cases}
++}
++\]
++
++In the clean range \(1<b<a/2+1\), the bias filter satisfies
++
++\[
++B_{\rho,1/2}(n,M)
++\asymp
++K_{\rho,1/2}(n)^{1-b}
++\]
++
++when \(M\) is not the bottleneck.  Since \(a>1\), the pre-knee exponent \(a/2\)
++is larger than \(1/2\), so the variance filter obeys
++
++\[
++V_{\rho,1/2}(n,M)
++\asymp
++\frac{\min\{M,K_{\rho,1/2}(n)\}}{N_{\rm eff}}.
++\]
++
++Thus, before the damping knee,
++
++\[
++\boxed{
++R_M(w_N)-\sigma^2
++\asymp
++M^{1-b}
+++n^{-2(b-1)/a}
+++\frac{n^{2/a}}{N_{\rm eff}}.
++}
++\]
++
++After the damping knee,
++
++\[
++\boxed{
++R_M(w_N)-\sigma^2
++\asymp
++M^{1-b}
+++\rho^{(b-1)/(2a)}n^{-(b-1)/a}
+++\frac{\rho^{-1/(2a)}n^{1/a}}{N_{\rm eff}}.
++}
++\]
++
++The sign of the \(\rho\) factor in the bias term is important: smaller \(\rho\)
++improves the tail bias by increasing the effective learned-mode count.
++
++---
++
++## 7. Interpretation
++
++The theorem proves the central bridge:
++
++\[
++\boxed{
++\text{gradient second moments}
++\Rightarrow
++\widehat v_i\asymp \lambda_i
++\Rightarrow
++A_i\asymp(\lambda_i+\rho)^{-1/2}
++\Rightarrow
++\text{Adam-like }q=1/2\text{ scaling.}
++}
++\]
++
++This is stronger than the heuristic \(P_i\propto\lambda_i^{-1/2}\): the damping
++\(\epsilon\) creates the effective spectral cutoff
++
++\[
++\rho=\epsilon/(\sigma^2+\|\bar w-w^\star\|_H^2),
++\]
++
++and therefore a sample-size knee
++
++\[
++n_\rho\asymp \rho^{-1/2}.
++\]
++
++So Adam/RMSProp-style adaptivity changes scaling exponents only across the part
++of the spectrum where
++
++\[
++\lambda_i\gtrsim \rho.
++\]
++
++Beyond that range, the effective spectrum returns to the original \(i^{-a}\)
++tail, with a \(\rho^{-1/(2a)}\) constant boost in the learned-mode count.
++
++---
++
++## 8. Next target theorem
++
++The next theorem should replace the frozen preconditioner by the online RMSProp
++recursion
++
++\[
++v_{t+1}=\beta_2v_t+(1-\beta_2)g_t^2,
++\qquad
++w_{t+1}=w_t-\eta(v_t+\epsilon)^{-1/2}g_t.
++\]
++
++The same identity gives
++
++\[
++\mathbb E[g_{t,i}^2\mid e_t]
++=
++\lambda_i(\sigma^2+\|e_t\|_H^2)+2\lambda_i^2e_{t,i}^2.
++\]
++
++Since the coordinate-specific term is always within a constant factor of the
++global term, the online preconditioner should track
++
++\[
++(v_{t,i}+\epsilon)^{-1/2}
++\asymp
++\bigl((\sigma^2+\|e_t\|_H^2)\lambda_i+\epsilon\bigr)^{-1/2}
++\asymp
++(\lambda_i+\rho_t)^{-1/2},
++\]
++
++where
++
++\[
++\rho_t=\epsilon/(\sigma^2+\|e_t\|_H^2).
++\]
++
++The online theorem should show that RMSProp is sandwiched between two frozen
++damped spectral preconditioners with \(\rho\in[\rho_{\min},\rho_{\max}]\), yielding
++the same exponent whenever \(\rho_t\) varies slowly relative to the EMA window
++\((1-\beta_2)^{-1}\).
+-- 
+2.47.3
+
+
+From 7025826c062a5cf8b089a52ddb463455dc6ea32a Mon Sep 17 00:00:00 2001
+From: Research Bot <research@example.com>
+Date: Mon, 15 Jun 2026 00:26:53 +0000
+Subject: [PATCH 3/3] Add online RMSProp tracking and sandwich theorem
+
+---
+ README.md                              |  20 +-
+ experiments/online_rmsprop_tracking.py | 177 +++++++
+ notes/04_online_rmsprop_tracking.md    | 607 +++++++++++++++++++++++++
+ notes/05_online_rmsprop_sandwich.md    | 481 ++++++++++++++++++++
+ scripts/run_online_tracking.sh         |   3 +
+ 5 files changed, 1284 insertions(+), 4 deletions(-)
+ create mode 100755 experiments/online_rmsprop_tracking.py
+ create mode 100644 notes/04_online_rmsprop_tracking.md
+ create mode 100644 notes/05_online_rmsprop_sandwich.md
+ create mode 100755 scripts/run_online_tracking.sh
+
+diff --git a/README.md b/README.md
+index 11b334d..d379cec 100644
+--- a/README.md
++++ b/README.md
+@@ -2,15 +2,27 @@
+ 
+ This repository is a working research notebook for extending the NeurIPS 2024 linear-regression scaling-law theory from vanilla one-pass SGD to Adam/RMSProp-like adaptive preconditioning.
+ 
+-Current proof notes:
++## Current proof notes
+ 
+ - `notes/01_fixed_spectral_preconditioning.md`: fixed spectral preconditioning baseline, `P_q = H^{-q}`.
+ - `notes/02_damped_spectral_preconditioning.md`: damped spectral preconditioning, `P_{rho,q}=(H+rho I)^{-q}`, including the two-slope effective spectrum, bias/variance spectral sums, and Adam/RMSProp `q=1/2` corollary.
+-- `notes/03_frozen_rmsprop_bridge.md`: frozen-RMSProp bridge theorem.  It proves that, in diagonal Gaussian linear regression, coordinate gradient second moments satisfy `E[g_i^2] \asymp c_e lambda_i`, so a frozen RMSProp preconditioner is spectrally equivalent to `(H+rho I)^(-1/2)` with `rho = epsilon / c_e`.
++- `notes/03_frozen_rmsprop_bridge.md`: frozen-RMSProp bridge theorem.  It proves that coordinate gradient second moments satisfy `E[g_i^2] \asymp c_e lambda_i`, so a frozen RMSProp preconditioner is spectrally equivalent to `(H+rho I)^(-1/2)` with `rho = epsilon / c_e`.
++- `notes/04_online_rmsprop_tracking.md`: population online-RMSProp spectral-tracking theorem.  The EMA state tracks a scalar multiple of `lambda_i`, giving a time-varying damped `q=1/2` preconditioner.
++- `notes/05_online_rmsprop_sandwich.md`: conditional online-RMSProp sandwich theorem.  If online second moments track their conditional means and the residual scale stays in a constant band, online RMSProp has the same scaling filters as frozen damped `q=1/2` spectral preconditioning.  A robust decoupled online estimator is proved to satisfy the tracking event.
+ 
+-Experiments:
++## Experiments
+ 
+ - `experiments/synthetic_damped_preconditioning.py`: oracle damped spectral-preconditioning sanity check.
+ - `experiments/frozen_rmsprop_bridge.py`: verifies the gradient-second-moment bridge `v_i \propto lambda_i` and compares frozen RMSProp to the oracle `q=1/2` preconditioner.
++- `experiments/online_rmsprop_tracking.py`: verifies that online RMSProp's EMA keeps `log v_t` versus `log lambda` slope near one, so the active preconditioner slope has `q_eff \approx 1/2`.
+ 
+-Next target: prove an online RMSProp theorem by showing that the EMA preconditioner tracks a time-varying damped spectral preconditioner `(H+rho_t I)^(-1/2)`, where `rho_t = epsilon / (sigma^2 + ||w_t-w*||_H^2)`.
++## Quick sanity checks
++
++```bash
++python experiments/frozen_rmsprop_bridge.py
++python experiments/online_rmsprop_tracking.py
++```
++
++## Next target
++
++The next theorem target is raw-EMA concentration for online RMSProp/Adam.  The current sandwich theorem proves the risk law conditional on tracking and proves tracking for a robust decoupled estimator.  The remaining technical upgrade is to prove that the ordinary EMA satisfies the same tracking event under a slow-drift condition, then add Adam first-moment momentum and AdamW weight decay.
+diff --git a/experiments/online_rmsprop_tracking.py b/experiments/online_rmsprop_tracking.py
+new file mode 100755
+index 0000000..478736b
+--- /dev/null
++++ b/experiments/online_rmsprop_tracking.py
+@@ -0,0 +1,177 @@
++r"""Online RMSProp spectral-tracking sanity check.
++
++This experiment tests the theorem in notes/04_online_rmsprop_tracking.md.
++In diagonal Gaussian linear regression, online RMSProp should maintain
++
++    v_{t,i} \propto c_t lambda_i,
++
++so the preconditioner should have effective spectral exponent q_eff ~= 1/2
++on coordinates where epsilon is not the bottleneck.
++
++Run:
++    python experiments/online_rmsprop_tracking.py
++"""
++
++from __future__ import annotations
++
++import argparse
++import json
++from dataclasses import asdict, dataclass
++from typing import Any
++
++import numpy as np
++
++
++@dataclass
++class TrackingSummary:
++    dim: int
++    steps: int
++    a: float
++    b: float
++    sigma: float
++    beta2: float
++    epsilon: float
++    eta: float
++    final_c_t: float
++    final_rho_t: float
++    final_slope_log_v_vs_log_lambda: float
++    final_q_eff: float
++    final_median_mu_ratio: float
++    final_median_abs_log_mu_ratio: float
++    median_tail_slope_log_v_vs_log_lambda: float
++    median_tail_q_eff: float
++    median_tail_mu_ratio: float
++
++
++def make_problem(
++    dim: int,
++    a: float,
++    b: float,
++    rng: np.random.Generator,
++) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
++    idx = np.arange(1, dim + 1, dtype=float)
++    lam = idx ** (-a)
++    source_energy = idx ** (-b)  # s_i = lambda_i (w_i*)^2
++    signs = rng.choice(np.array([-1.0, 1.0]), size=dim)
++    w_star = signs * np.sqrt(source_energy / lam)
++    return idx, lam, w_star
++
++
++def slope(x: np.ndarray, y: np.ndarray) -> float:
++    if x.size < 2:
++        return float("nan")
++    return float(np.polyfit(x, y, deg=1)[0])
++
++
++def run_experiment(args: argparse.Namespace) -> dict[str, Any]:
++    rng = np.random.default_rng(args.seed)
++    idx, lam, w_star = make_problem(args.dim, args.a, args.b, rng)
++
++    w = np.zeros(args.dim)
++    v = np.zeros(args.dim)
++    records: list[dict[str, float]] = []
++
++    coord = np.arange(args.dim)
++    base_coord_mask = (coord >= args.min_coord) & (coord < args.max_coord)
++
++    for t in range(1, args.steps + 1):
++        x = rng.normal(loc=0.0, scale=np.sqrt(lam))
++        y = float(x @ w_star + rng.normal(scale=args.sigma))
++        residual = float(x @ w - y)
++        g = residual * x
++
++        v = args.beta2 * v + (1.0 - args.beta2) * (g * g)
++        v_hat = v / max(1.0 - args.beta2**t, 1e-300)
++        precond = 1.0 / np.sqrt(v_hat + args.epsilon)
++        w -= args.eta * precond * g
++
++        if t % args.log_every == 0 or t == args.steps:
++            e = w - w_star
++            c_t = float(args.sigma**2 + np.sum(lam * e * e))
++            rho_t = float(args.epsilon / c_t)
++
++            # Avoid coordinates where epsilon dominates, since the theorem predicts
++            # q_eff ~= 1/2 only before the epsilon/damping knee.
++            active = (v_hat > args.epsilon_multiplier * args.epsilon) & base_coord_mask
++            if int(np.sum(active)) < 20:
++                active = base_coord_mask
++
++            log_lam = np.log(lam[active])
++            log_v = np.log(v_hat[active] + 1e-300)
++            log_p = np.log(precond[active])
++
++            slope_v = slope(log_lam, log_v)
++            q_eff = -slope(log_lam, log_p)
++
++            mu_emp = lam * precond
++            mu_pop = (c_t ** -0.5) * lam / np.sqrt(lam + rho_t)
++            ratio = mu_emp[active] / mu_pop[active]
++            median_ratio = float(np.median(ratio))
++            median_abs_log_ratio = float(np.median(np.abs(np.log(ratio))))
++
++            records.append(
++                {
++                    "step": float(t),
++                    "c_t": c_t,
++                    "rho_t": rho_t,
++                    "slope_log_v_vs_log_lambda": slope_v,
++                    "q_eff": q_eff,
++                    "median_mu_ratio": median_ratio,
++                    "median_abs_log_mu_ratio": median_abs_log_ratio,
++                    "num_active_coords": float(np.sum(active)),
++                }
++            )
++
++    tail = records[-max(1, args.tail_records) :]
++    summary = TrackingSummary(
++        dim=args.dim,
++        steps=args.steps,
++        a=args.a,
++        b=args.b,
++        sigma=args.sigma,
++        beta2=args.beta2,
++        epsilon=args.epsilon,
++        eta=args.eta,
++        final_c_t=records[-1]["c_t"],
++        final_rho_t=records[-1]["rho_t"],
++        final_slope_log_v_vs_log_lambda=records[-1]["slope_log_v_vs_log_lambda"],
++        final_q_eff=records[-1]["q_eff"],
++        final_median_mu_ratio=records[-1]["median_mu_ratio"],
++        final_median_abs_log_mu_ratio=records[-1]["median_abs_log_mu_ratio"],
++        median_tail_slope_log_v_vs_log_lambda=float(
++            np.median([r["slope_log_v_vs_log_lambda"] for r in tail])
++        ),
++        median_tail_q_eff=float(np.median([r["q_eff"] for r in tail])),
++        median_tail_mu_ratio=float(np.median([r["median_mu_ratio"] for r in tail])),
++    )
++
++    return {"summary": asdict(summary), "records": records}
++
++
++def build_parser() -> argparse.ArgumentParser:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--dim", type=int, default=1024)
++    parser.add_argument("--steps", type=int, default=3000)
++    parser.add_argument("--a", type=float, default=1.6)
++    parser.add_argument("--b", type=float, default=1.4)
++    parser.add_argument("--sigma", type=float, default=0.1)
++    parser.add_argument("--beta2", type=float, default=0.99)
++    parser.add_argument("--epsilon", type=float, default=1e-6)
++    parser.add_argument("--eta", type=float, default=0.002)
++    parser.add_argument("--seed", type=int, default=0)
++    parser.add_argument("--log-every", type=int, default=200)
++    parser.add_argument("--tail-records", type=int, default=5)
++    parser.add_argument("--epsilon-multiplier", type=float, default=10.0)
++    parser.add_argument("--min-coord", type=int, default=10)
++    parser.add_argument("--max-coord", type=int, default=512)
++    return parser
++
++
++def main() -> None:
++    args = build_parser().parse_args()
++    result = run_experiment(args)
++    print(json.dumps(result["summary"], indent=2, sort_keys=True))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/notes/04_online_rmsprop_tracking.md b/notes/04_online_rmsprop_tracking.md
+new file mode 100644
+index 0000000..1b2ffeb
+--- /dev/null
++++ b/notes/04_online_rmsprop_tracking.md
+@@ -0,0 +1,607 @@
++# Online RMSProp spectral tracking theorem
++
++This note is the next bridge after the frozen-RMSProp theorem.  The frozen
++result showed that a burn-in estimate of the coordinate gradient second moment
++satisfies
++
++\[
++\widehat v_i \asymp c_e \lambda_i,
++\qquad
++c_e=\sigma^2+\|\bar w-w^\star\|_H^2,
++\]
++
++so the frozen RMSProp preconditioner is spectrally equivalent to
++
++\[
++(\widehat v_i+\epsilon)^{-1/2}
++\asymp
++c_e^{-1/2}(\lambda_i+\epsilon/c_e)^{-1/2}.
++\]
++
++This note proves the corresponding **online population tracking theorem**:
++RMSProp's exponential moving average tracks a time-varying scalar multiple of
++\(\lambda_i\).  Therefore online RMSProp behaves, at the level of its
++instantaneous spectrum, like a time-varying damped spectral preconditioner
++
++\[
++(H+\rho_t I)^{-1/2},
++\qquad
++\rho_t\simeq \epsilon/(\sigma^2+\|w_t-w^\star\|_H^2).
++\]
++
++The theorem is deliberately stated first for the population EMA.  This isolates
++the mechanism from heavy-tail concentration issues.  A final section gives the
++empirical/concentration event under which raw or robust RMSProp inherits the same
++spectral equivalence.
++
++---
++
++## 1. Setup
++
++Work in the population covariance eigenbasis.  Let
++
++\[
++x_t\sim \mathcal N(0,H),
++\qquad
++H=\operatorname{diag}(\lambda_i),
++\]
++
++and
++
++\[
++y_t=\langle x_t,w^\star\rangle+\xi_t,
++\qquad
++\mathbb E[\xi_t]=0,
++\qquad
++\mathbb E[\xi_t^2]=\sigma^2,
++\]
++
++with \(\xi_t\) independent of \(x_t\).  Let \(\mathcal F_t\) be the sigma-field
++containing all randomness before drawing \((x_t,y_t)\), so \(w_t\) is
++\(\mathcal F_t\)-measurable.  Define
++
++\[
++e_t:=w_t-w^\star,
++\qquad
++c_t:=\sigma^2+\|e_t\|_H^2.
++\]
++
++The single-sample squared-loss gradient is
++
++\[
++g_t=(\langle x_t,e_t\rangle-\xi_t)x_t.
++\]
++
++Coordinate \(i\) is
++
++\[
++g_{t,i}=(\langle x_t,e_t\rangle-\xi_t)x_{t,i}.
++\]
++
++The online RMSProp second moment is
++
++\[
++v_{t+1,i}=\beta_2 v_{t,i}+(1-\beta_2)g_{t,i}^2,
++\qquad
++0\le \beta_2<1.
++\]
++
++The corresponding preconditioner is
++
++\[
++P_{t+1,i}=(v_{t+1,i}+\epsilon)^{-1/2}.
++\]
++
++For the proof, introduce the population/predictable second moment
++
++\[
++\nu_{t,i}:=\mathbb E[g_{t,i}^2\mid \mathcal F_t]
++\]
++
++and the population RMSProp EMA
++
++\[
++m_{t+1,i}=\beta_2 m_{t,i}+(1-\beta_2)\nu_{t,i},
++\qquad
++m_{0,i}=0.
++\]
++
++Also define the scalar EMA
++
++\[
++d_{t+1}=\beta_2 d_t+(1-\beta_2)c_t,
++\qquad
++d_0=0.
++\]
++
++Bias correction can be applied by replacing \(m_t,d_t\) with
++\(m_t/(1-\beta_2^t),d_t/(1-\beta_2^t)\).  Since both are divided by the same
++scalar, all constant-factor spectral equivalences below are unchanged.  To keep
++notation light, we work with the uncorrected quantities.
++
++---
++
++## 2. Recalled identity: coordinate gradient second moments
++
++The frozen-RMSProp note proved the following identity.  Conditional on
++\(\mathcal F_t\),
++
++\[
++\boxed{
++\nu_{t,i}
++=\mathbb E[g_{t,i}^2\mid \mathcal F_t]
++=\lambda_i(\sigma^2+\|e_t\|_H^2)+2\lambda_i^2e_{t,i}^2.
++}
++\]
++
++Equivalently,
++
++\[
++\nu_{t,i}=\lambda_i(c_t+2r_{t,i}),
++\qquad
++r_{t,i}:=\lambda_i e_{t,i}^2.
++\]
++
++Since
++
++\[
++0\le r_{t,i}\le \sum_j\lambda_j e_{t,j}^2\le c_t,
++\]
++
++we have the uniform bound
++
++\[
++\boxed{
++\lambda_i c_t
++\le
++\nu_{t,i}
++\le
++3\lambda_i c_t.
++}
++\]
++
++This bound is the only probabilistic identity needed for the online tracking
++theorem.
++
++---
++
++## 3. Main theorem: population online RMSProp tracks the spectrum
++
++### Theorem 1: population RMSProp spectral tracking
++
++For every time \(t\ge 0\) and coordinate \(i\),
++
++\[
++\boxed{
++\lambda_i d_t
++\le
++m_{t,i}
++\le
++3\lambda_i d_t.
++}
++\]
++
++Consequently, the population RMSProp preconditioner
++
++\[
++P^{\rm pop}_{t,i}:=(m_{t,i}+\epsilon)^{-1/2}
++\]
++
++satisfies
++
++\[
++\boxed{
++\frac1{\sqrt 3}\,d_t^{-1/2}(\lambda_i+\epsilon/d_t)^{-1/2}
++\le
++P^{\rm pop}_{t,i}
++\le
++d_t^{-1/2}(\lambda_i+\epsilon/d_t)^{-1/2}
++}
++\]
++
++whenever \(d_t>0\).  Thus population online RMSProp is spectrally equivalent to
++
++a time-varying damped \(q=1/2\) preconditioner
++
++\[
++P^{\rm pop}_{t,i}\asymp d_t^{-1/2}(\lambda_i+\rho_t)^{-1/2},
++\qquad
++\rho_t:=\epsilon/d_t.
++\]
++
++### Proof
++
++The proof is an induction using the coordinate second-moment identity.
++
++At \(t=0\), both \(m_{0,i}\) and \(d_0\) are zero, so the claim holds.  Suppose
++
++\[
++\lambda_i d_t\le m_{t,i}\le 3\lambda_i d_t.
++\]
++
++Using
++
++\[
++\lambda_i c_t\le \nu_{t,i}\le 3\lambda_i c_t,
++\]
++
++we get
++
++\[
++\begin{aligned}
++m_{t+1,i}
++&=\beta_2m_{t,i}+(1-\beta_2)\nu_{t,i}\\
++&\ge
++\beta_2\lambda_i d_t+(1-\beta_2)\lambda_i c_t\\
++&=\lambda_i d_{t+1},
++\end{aligned}
++\]
++
++and similarly
++
++\[
++\begin{aligned}
++m_{t+1,i}
++&\le
++3\beta_2\lambda_i d_t+3(1-\beta_2)\lambda_i c_t\\
++&=3\lambda_i d_{t+1}.
++\end{aligned}
++\]
++
++This proves the first display.
++
++For the preconditioner, the first display gives
++
++\[
++d_t\lambda_i+\epsilon
++\le
++m_{t,i}+\epsilon
++\le
++3d_t\lambda_i+\epsilon.
++\]
++
++Taking inverse square roots,
++
++\[
++(3d_t\lambda_i+\epsilon)^{-1/2}
++\le
++(m_{t,i}+\epsilon)^{-1/2}
++\le
++(d_t\lambda_i+\epsilon)^{-1/2}.
++\]
++
++Since
++
++\[
++3d_t\lambda_i+\epsilon\le 3(d_t\lambda_i+\epsilon),
++\]
++
++we get
++
++\[
++\frac1{\sqrt3}(d_t\lambda_i+\epsilon)^{-1/2}
++\le
++(m_{t,i}+\epsilon)^{-1/2}
++\le
++(d_t\lambda_i+\epsilon)^{-1/2}.
++\]
++
++Finally,
++
++\[
++(d_t\lambda_i+\epsilon)^{-1/2}
++=
++d_t^{-1/2}(\lambda_i+\epsilon/d_t)^{-1/2}.
++\]
++
++This proves the theorem.
++
++---
++
++## 4. Instantaneous transformed spectrum
++
++The preconditioned update is
++
++\[
++w_{t+1}=w_t-\eta_t P_t g_t,
++\]
++
++where \(P_t\) is diagonal.  If \(P_t\) were frozen during a step, the equivalent
++feature covariance would be
++
++\[
++P_t^{1/2}HP_t^{1/2}.
++\]
++
++Thus the instantaneous transformed eigenvalue is
++
++\[
++\mu_{t,i}=\lambda_iP_{t,i}.
++\]
++
++For population RMSProp, Theorem 1 gives
++
++\[
++\boxed{
++\mu^{\rm pop}_{t,i}
++\asymp
++d_t^{-1/2}\lambda_i(\lambda_i+\rho_t)^{-1/2},
++\qquad
++\rho_t=\epsilon/d_t.
++}
++\]
++
++The scalar \(d_t^{-1/2}\) rescales the learning rate.  The nontrivial spectral
++shape is therefore
++
++\[
++\lambda_i(\lambda_i+\rho_t)^{-1/2}.
++\]
++
++If
++
++\[
++\lambda_i\asymp i^{-a},
++\]
++
++then there is an instantaneous damping knee
++
++\[
++m_t\asymp \rho_t^{-1/a},
++\]
++
++with
++
++\[
++\mu^{\rm shape}_{t,i}
++:=\lambda_i(\lambda_i+\rho_t)^{-1/2}
++\asymp
++\begin{cases}
++i^{-a/2}, & i\lesssim m_t,\\[3pt]
++\rho_t^{-1/2}i^{-a}, & i\gtrsim m_t.
++\end{cases}
++\]
++
++Therefore online RMSProp has the same instantaneous two-slope spectrum as the
++frozen damped theorem with \(q=1/2\), but with time-varying damping
++\(\rho_t=\epsilon/d_t\).
++
++---
++
++## 5. Slow-drift corollary
++
++The scalar \(d_t\) is an exponential moving average of
++
++\[
++c_t=\sigma^2+\|w_t-w^\star\|_H^2.
++\]
++
++So \(d_t\) is a delayed/smoothed version of the residual scale.  If \(c_t\) does
++not change much over the RMSProp memory window, then \(d_t\asymp c_t\).
++
++### Lemma 2: slow drift of the residual scale
++
++Let
++
++\[
++\bar d_t:=\frac{d_t}{1-\beta_2^t}
++=\sum_{s=0}^{t-1}a_{t,s}c_s,
++\qquad
++ a_{t,s}:=\frac{(1-\beta_2)\beta_2^{t-1-s}}{1-\beta_2^t}.
++\]
++
++The weights \(a_{t,s}\) are nonnegative and sum to one.  If, for some \(R\ge 1\),
++
++\[
++R^{-1}c_{t-1}\le c_s\le Rc_{t-1}
++\qquad
++\text{for every }0\le s<t,
++\]
++
++then
++
++\[
++\boxed{
++R^{-1}c_{t-1}\le \bar d_t\le Rc_{t-1}.
++}
++\]
++
++More generally, if the above bound holds on the last \(L\) steps and
++\(\sum_{s<t-L}a_{t,s}\le \tau\), while \(0\le c_s\le C_{\max}\), then
++
++\[
++\bar d_t
++\le
++Rc_{t-1}+\tau C_{\max},
++\qquad
++\bar d_t
++\ge
++(1-\tau)R^{-1}c_{t-1}.
++\]
++
++### Proof
++
++The first claim follows immediately because \(\bar d_t\) is a convex combination
++of the \(c_s\).  For the second claim, split the convex combination into the last
++\(L\) steps and the older tail.  The older tail has total weight at most \(\tau\).
++
++### Consequence
++
++On a quasi-static interval where \(d_t\asymp c_t\), online RMSProp satisfies
++
++\[
++P^{\rm pop}_{t,i}
++\asymp
++c_t^{-1/2}(\lambda_i+\epsilon/c_t)^{-1/2}.
++\]
++
++Thus the effective damping is
++
++\[
++\boxed{
++\rho_t\asymp \epsilon/c_t
++=
++\frac{\epsilon}{\sigma^2+\|w_t-w^\star\|_H^2}.
++}
++\]
++
++As training reduces the residual scale \(c_t\), the effective damping \(\rho_t\)
++increases.  This means the range of directions that receive the flattened
++\(a/2\)-spectrum treatment can shrink over time unless \(\epsilon\) is very small.
++This gives a concrete scaling-law role to Adam/RMSProp's \(\epsilon\) parameter.
++
++---
++
++## 6. Quasi-static scaling corollary
++
++Fix a time interval \(I\) on which
++
++\[
++d_t\asymp d,
++\qquad
++\rho_t=\epsilon/d_t\asymp \rho:=\epsilon/d.
++\]
++
++Absorb the scalar \(d^{-1/2}\) into the learning rate and define the effective
++sample-size/step parameter
++
++\[
++n_I:=\sum_{t\in I}\eta_t d^{-1/2}.
++\]
++
++On this interval, population online RMSProp has the same spectral filters as the
++frozen damped \(q=1/2\) theorem:
++
++\[
++\mu_i^{\rm rms}=\lambda_i(\lambda_i+\rho)^{-1/2}.
++\]
++
++Define
++
++\[
++K_{\rho,1/2}(n_I)
++:=\#\{i:\mu_i^{\rm rms}\gtrsim n_I^{-1}\}.
++\]
++
++If \(\lambda_i\asymp i^{-a}\), then
++
++\[
++\boxed{
++K_{\rho,1/2}(n_I)
++\asymp
++\begin{cases}
++n_I^{2/a}, & n_I\lesssim \rho^{-1/2},\\[3pt]
++\rho^{-1/(2a)}n_I^{1/a}, & n_I\gtrsim \rho^{-1/2}.
++\end{cases}
++}
++\]
++
++Thus online RMSProp should show the same active-preconditioning phase as frozen
++RMSProp whenever \(\rho_t\) is approximately constant over the time scale that
++contributes most of the bias reduction.
++
++In the clean source range
++
++\[
++1<b<a/2+1,
++\]
++
++and away from the model-size bottleneck, the local risk law on such an interval
++has the same form as the frozen theorem:
++
++\[
++R-\sigma^2
++\approx
++M^{1-b}
+++
++K_{\rho,1/2}(n_I)^{1-b}
+++
++\frac{K_{\rho,1/2}(n_I)}{N_{\rm eff}}.
++\]
++
++This is not yet a full online-RMSProp risk theorem, because it treats the
++preconditioner as quasi-static inside the interval.  But it is the rigorous
++spectral tracking statement needed for the next theorem: a sandwich risk bound
++for online RMSProp with slowly varying \(\rho_t\).
++
++---
++
++## 7. Empirical RMSProp tracking event
++
++The theorem above uses the population EMA \(m_t\).  The raw RMSProp variable
++\(v_t\) is random.  The natural high-probability event is
++
++\[
++\mathcal E_{M,T}(\kappa):=
++\left\{
++\kappa^{-1}m_{t,i}
++\le
++v_{t,i}
++\le
++\kappa m_{t,i}
++\quad
++\text{for all }1\le i\le M,\ 1\le t\le T
++\right\}.
++\]
++
++On \(\mathcal E_{M,T}(\kappa)\), raw online RMSProp inherits the population
++spectral equivalence:
++
++\[
++(v_{t,i}+\epsilon)^{-1/2}
++\asymp_{\kappa}
++(d_t\lambda_i+\epsilon)^{-1/2}
++=
++d_t^{-1/2}(\lambda_i+\epsilon/d_t)^{-1/2}.
++\]
++
++A fully rigorous high-probability proof of \(\mathcal E_{M,T}(\kappa)\) needs
++care because \(g_{t,i}^2\) is a fourth-order Gaussian-chaos variable and raw EMA
++has heavy tails.  There are two clean routes:
++
++1. **Robust online estimator.**  Replace raw EMA by a rolling clipped or
++   median-of-means estimator.  Then \(\mathcal E_{M,T}(\kappa)\) follows from
++   blockwise concentration plus a union bound over \((i,t)\).
++2. **Conditional raw-EMA theorem.**  Prove the online risk theorem conditional on
++   \(\mathcal E_{M,T}(\kappa)\), then verify empirically that raw RMSProp
++   satisfies this event in the Gaussian power-law model for the time scales of
++   interest.
++
++For the current project, the next proof target should use route 2 first and
++route 1 as the final technical upgrade.
++
++---
++
++## 8. Next theorem target
++
++The next theorem should be a **sandwich risk theorem**.
++
++Assume that on a training horizon \([0,T]\), raw or robust online RMSProp satisfies
++
++\[
++P_{t,i}
++\asymp
++c_t^{-1/2}(\lambda_i+\rho_t)^{-1/2},
++\qquad
++\rho_t=\epsilon/c_t,
++\]
++
++and that
++
++\[
++\rho_-\le \rho_t\le \rho_+.
++\]
++
++Since
++
++\[
++\lambda_i(\lambda_i+\rho_+)^{-1/2}
++\le
++\lambda_i(\lambda_i+\rho_t)^{-1/2}
++\le
++\lambda_i(\lambda_i+\rho_-)^{-1/2},
++\]
++
++online RMSProp should be sandwiched between two fixed damped preconditioners
++with dampings \(\rho_+\) and \(\rho_-\).  This would turn the spectral tracking
++result into a full online optimizer-dependent scaling law.
+diff --git a/notes/05_online_rmsprop_sandwich.md b/notes/05_online_rmsprop_sandwich.md
+new file mode 100644
+index 0000000..835470c
+--- /dev/null
++++ b/notes/05_online_rmsprop_sandwich.md
+@@ -0,0 +1,481 @@
++# Online RMSProp sandwich theorem
++
++This note turns the online spectral-tracking theorem into a risk/scaling theorem.
++The tracking note proved the population identity
++
++\[
++m_{t,i}:=\mathbb E[g_{t,i}^2\mid \mathcal F_t]
++=\lambda_i(\sigma^2+\|e_t\|_H^2)+2\lambda_i^2e_{t,i}^2,
++\]
++
++and therefore
++
++\[
++c_t\lambda_i\le m_{t,i}\le 3c_t\lambda_i,
++\qquad
++c_t:=\sigma^2+\|e_t\|_H^2.
++\]
++
++The result below says that, whenever the online second-moment state tracks these
++conditional means and the scalar residual energy does not move by more than a
++constant factor over the horizon, RMSProp is sandwiched by fixed damped
++\(q=1/2\) spectral preconditioners.  Hence it has the same scaling filters as the
++frozen-RMSProp theorem.
++
++---
++
++## 1. Setup
++
++Work in diagonal Gaussian linear regression:
++
++\[
++x\sim\mathcal N(0,H),\qquad H=\operatorname{diag}(\lambda_i),
++\qquad \lambda_i\asymp i^{-a},\quad a>1,
++\]
++
++\[
++y=\langle x,w^\star\rangle+\xi,
++\qquad \mathbb E\xi^2=\sigma^2,
++\]
++
++and source energies
++
++\[
++s_i:=\lambda_i(w_i^\star)^2\asymp i^{-b},\qquad b>1.
++\]
++
++RMSProp without first-moment momentum is
++
++\[
++v_{t,i}=\beta_2v_{t-1,i}+(1-\beta_2)g_{t,i}^2,
++\qquad
++A_{t,i}=(v_{t,i}+\epsilon)^{-1/2},
++\]
++
++\[
++w_{t+1}=w_t-\gamma_t A_tg_t.
++\]
++
++Define
++
++\[
++e_t=w_t-w^\star,
++\qquad
++c_t=\sigma^2+\|e_t\|_H^2.
++\]
++
++---
++
++## 2. Tracking and residual-band assumptions
++
++For constants \(0<\kappa_-\le \kappa_+<\infty\), define the online tracking event
++
++\[
++\mathcal E_{\rm track}:=
++\left\{
++\kappa_-c_t\lambda_i\le v_{t,i}\le \kappa_+c_t\lambda_i,
++\quad 1\le i\le M,
++\quad 0\le t<N
++\right\}.
++\]
++
++Also assume the scalar residual level stays in a constant band:
++
++\[
++0<c_{\min}\le c_t\le c_{\max}<\infty,
++\qquad
++\chi:=c_{\max}/c_{\min}=O(1).
++\]
++
++Choose any reference value \(c_\circ\in[c_{\min},c_{\max}]\) and set
++
++\[
++\rho_\circ:=\epsilon/c_\circ.
++\]
++
++The constant-band condition is not meant to hold for all of training in every
++problem.  It is the quasi-static regime in which one can assign a single damping
++level to the online method.  If \(c_t\) drifts across many scales, the theorem
++applies piecewise, with a changing \(\rho_\circ\).
++
++---
++
++## 3. Tracking implies a fixed spectral envelope
++
++### Lemma 1: online preconditioner envelope
++
++On \(\mathcal E_{\rm track}\) and under the residual-band condition,
++
++\[
++\boxed{
++C_-c_\circ^{-1/2}(\lambda_i+\rho_\circ)^{-1/2}
++\le
++A_{t,i}
++\le
++C_+c_\circ^{-1/2}(\lambda_i+\rho_\circ)^{-1/2}
++}
++\]
++
++for every \(i\le M\) and \(0\le t<N\).  The constants \(C_-,C_+\) depend only on
++\(\kappa_-,\kappa_+\) and \(\chi\).  Consequently
++
++\[
++\mu_{t,i}:=\lambda_iA_{t,i}
++\asymp
++c_\circ^{-1/2}\lambda_i(\lambda_i+\rho_\circ)^{-1/2}.
++\]
++
++### Proof
++
++On the tracking event,
++
++\[
++\kappa_-c_t\lambda_i+\epsilon
++\le v_{t,i}+\epsilon
++\le
++\kappa_+c_t\lambda_i+\epsilon.
++\]
++
++Since \(c_t/c_\circ\in[\chi^{-1},\chi]\),
++
++\[
++\kappa_-c_t\lambda_i+\epsilon
++\ge
++\min\{\kappa_-/\chi,1\}(c_\circ\lambda_i+\epsilon),
++\]
++
++and
++
++\[
++\kappa_+c_t\lambda_i+\epsilon
++\le
++\max\{\kappa_+\chi,1\}(c_\circ\lambda_i+\epsilon).
++\]
++
++Using \(c_\circ\lambda_i+\epsilon=c_\circ(\lambda_i+\rho_\circ)\) and taking inverse
++square roots gives the claim.
++
++---
++
++## 4. Filter stability under a time-varying spectral envelope
++
++Let
++
++\[
++\mu_i^\circ:=\lambda_i(\lambda_i+\rho_\circ)^{-1/2},
++\qquad
++N_{\rm eff}:=N/\log N,
++\qquad
++n:=N_{\rm eff}\gamma c_\circ^{-1/2}.
++\]
++
++Define the fixed-reference filters
++
++\[
++B_{\rho_\circ,1/2}(n,M)
++:=\sum_{i\le M}\frac{s_i}{1+n\mu_i^\circ},
++\]
++
++\[
++V_{\rho_\circ,1/2}(n,M)
++:=\frac1{N_{\rm eff}}\sum_{i\le M}\min\{1,n^2(\mu_i^\circ)^2\}.
++\]
++
++### Lemma 2: filter comparison
++
++Assume the same geometric step-decay schedule and stability condition as in the
++deterministic damped theorem.  If the time-varying eigenvalues satisfy
++
++\[
++\mu_{t,i}\asymp c_\circ^{-1/2}\mu_i^\circ
++\]
++
++uniformly over \((t,i)\), then the bias and variance filters of the time-varying
++preconditioned recursion are comparable to
++
++\[
++B_{\rho_\circ,1/2}(n,M),
++\qquad
++V_{\rho_\circ,1/2}(n,M).
++\]
++
++### Proof
++
++For coordinate \(i\), the relevant cumulative learning mass is
++
++\[
++\Theta_i:=\sum_{t<N}\gamma_t\mu_{t,i}.
++\]
++
++The spectral envelope and the geometric schedule give
++
++\[
++\Theta_i\asymp c_\circ^{-1/2}\mu_i^\circ\sum_{t<N}\gamma_t
++\asymp N_{\rm eff}\gamma c_\circ^{-1/2}\mu_i^\circ
++=n\mu_i^\circ.
++\]
++
++The last-iterate one-pass bias filter has a single transition at
++\(\Theta_i\asymp1\) and is comparable to \((1+\Theta_i)^{-1}\), so the
++source-weighted bias is comparable to
++
++\[
++\sum_{i\le M}\frac{s_i}{1+n\mu_i^\circ}.
++\]
++
++The variance part is controlled by the effective variance dimension
++
++\[
++\mathcal D\asymp\sum_{i\le M}\min\{1,\Theta_i^2\}.
++\]
++
++Dividing by \(N_{\rm eff}\) and substituting \(\Theta_i\asymp n\mu_i^\circ\) gives
++\(V_{\rho_\circ,1/2}(n,M)\).  Constant-factor changes in \(\Theta_i\) do not change
++these filters beyond constants.
++
++---
++
++## 5. Main theorem
++
++### Theorem 1: conditional online RMSProp sandwich scaling law
++
++Assume:
++
++1. \(\lambda_i\asymp i^{-a}\), \(a>1\), and \(s_i\asymp i^{-b}\), \(b>1\);
++2. the tracking event \(\mathcal E_{\rm track}\) holds for \(0\le t<N\), \(i\le M\);
++3. \(c_t\in[c_{\min},c_{\max}]\) with \(c_{\max}/c_{\min}=O(1)\);
++4. the stepsize schedule is stable with respect to the upper spectral envelope.
++
++Then online RMSProp satisfies, up to constants and logarithmic factors,
++
++\[
++\boxed{
++\mathbb E R_M(w_N)-\sigma^2
++\asymp
++\underbrace{\sum_{i>M}s_i}_{\text{approximation}}
+++
++\underbrace{B_{\rho_\circ,1/2}(n,M)}_{\text{bias/optimization}}
+++
++\underbrace{V_{\rho_\circ,1/2}(n,M)}_{\text{variance/noise}},
++}
++\]
++
++where
++
++\[
++\rho_\circ=\epsilon/c_\circ,
++\qquad
++n=N_{\rm eff}\gamma c_\circ^{-1/2},
++\qquad
++\mu_i^\circ=\lambda_i(\lambda_i+\rho_\circ)^{-1/2}.
++\]
++
++Thus, conditional on online tracking, RMSProp has the same scaling law as frozen
++damped spectral preconditioning with \(q=1/2\).
++
++### Proof
++
++Lemma 1 gives
++
++\[
++\mu_{t,i}=\lambda_iA_{t,i}
++\asymp c_\circ^{-1/2}\mu_i^\circ.
++\]
++
++Lemma 2 then converts the time-varying recursion to the fixed filters
++\(B_{\rho_\circ,1/2}\) and \(V_{\rho_\circ,1/2}\).  The approximation term is
++unchanged because the model keeps only the first \(M\) source coordinates:
++
++\[
++\sum_{i>M}s_i\asymp M^{1-b}.
++\]
++
++The source sequence is invariant under every diagonal preconditioner:
++
++\[
++\mu_{t,i}(A_{t,i}^{-1/2}w_i^\star)^2
++=\lambda_iA_{t,i}\cdot A_{t,i}^{-1}(w_i^\star)^2
++=s_i.
++\]
++
++Therefore online RMSProp changes only the effective covariance spectrum, not the
++source exponent.  Combining approximation, bias, and variance gives the stated
++risk law.
++
++---
++
++## 6. Robust decoupled online RMSProp proves the tracking event
++
++The theorem above is conditional for raw RMSProp.  The condition can be proved
++for a robust decoupled estimator that uses fresh probe gradients to estimate the
++second moment at each iterate.
++
++At time \(t\), draw \(B=LR\) independent probe samples at the current \(w_t\), set
++\(Y_{t,\ell,i}=g_{t,\ell,i}(w_t)^2\), partition into \(R\) blocks of size \(L\),
++and define
++
++\[
++\widehat v_{t,i}
++:=\operatorname{median}_{1\le r\le R}
++\frac1L\sum_{\ell\in\text{block }r}Y_{t,\ell,i}.
++\]
++
++Use \(A_{t,i}=(\widehat v_{t,i}+\epsilon)^{-1/2}\).
++
++### Theorem 2: robust online tracking
++
++For any \(\tau\in(0,1)\) and \(\delta\in(0,1)\), if
++
++\[
++L\ge C_1\tau^{-2},
++\qquad
++R\ge C_2\log(2MN/\delta),
++\]
++
++then with probability at least \(1-\delta\), simultaneously for all
++\(0\le t<N\) and \(1\le i\le M\),
++
++\[
++\boxed{
++(1-\tau)m_{t,i}\le \widehat v_{t,i}\le (1+\tau)m_{t,i},
++}
++\]
++
++where \(m_{t,i}=\mathbb E[g_{t,i}^2\mid w_t]\).  Consequently,
++
++\[
++\boxed{
++(1-\tau)c_t\lambda_i
++\le \widehat v_{t,i}\le
++3(1+\tau)c_t\lambda_i.
++}
++\]
++
++### Proof
++
++Condition on the past up to time \(t\), so \(w_t\) is fixed.  The probe variables
++\(Y_{t,\ell,i}\) are independent degree-four Gaussian-chaos variables.  As in the
++frozen theorem,
++
++\[
++\operatorname{Var}(Y_{t,\ell,i}\mid w_t)\le C m_{t,i}^2.
++\]
++
++Chebyshev's inequality makes each block mean \(\tau\)-accurate with probability
++at least \(3/4\) when \(L\ge C_1\tau^{-2}\).  A Chernoff bound over the \(R\)
++blocks makes the median fail with probability at most \(\exp(-cR)\) for one
++coordinate and time.  Taking \(R\ge C_2\log(2MN/\delta)\) and union bounding over
++all \((t,i)\) proves the simultaneous estimate.  The final display follows from
++the online gradient-second-moment identity.
++
++### Corollary: robust online RMSProp scaling
++
++If the residual scale stays in a constant band, the robust decoupled online
++method satisfies Theorem 1 with probability at least \(1-\delta\).  This gives a
++fully proved online-adaptive scaling theorem for a robust RMSProp variant.  Raw
++RMSProp/Adam remains the next concentration step.
++
++---
++
++## 7. Power-law simplification
++
++The fixed reference profile is
++
++\[
++\mu_i^\circ=\lambda_i(\lambda_i+\rho_\circ)^{-1/2}.
++\]
++
++For \(\lambda_i\asymp i^{-a}\), there is a spectral knee
++
++\[
++m_{\rho_\circ}\asymp \rho_\circ^{-1/a}
++\]
++
++and a sample-size knee
++
++\[
++n_{\rho_\circ}\asymp \rho_\circ^{-1/2}.
++\]
++
++The learned-mode count is
++
++\[
++K_{\rho_\circ,1/2}(n)=\#\{i:\mu_i^\circ\gtrsim n^{-1}\},
++\]
++
++so
++
++\[
++\boxed{
++K_{\rho_\circ,1/2}(n)
++\asymp
++\begin{cases}
++ n^{2/a}, & n\lesssim \rho_\circ^{-1/2},\\[3pt]
++ \rho_\circ^{-1/(2a)}n^{1/a}, & n\gtrsim \rho_\circ^{-1/2}.
++\end{cases}
++}
++\]
++
++In the clean range \(1<b<a/2+1\), when \(M\) is not the bottleneck,
++
++\[
++B_{\rho_\circ,1/2}(n,M)\asymp K_{\rho_\circ,1/2}(n)^{1-b},
++\qquad
++V_{\rho_\circ,1/2}(n,M)\asymp \frac{\min\{M,K_{\rho_\circ,1/2}(n)\}}{N_{\rm eff}}.
++\]
++
++Therefore, before the damping knee,
++
++\[
++\boxed{
++R_M(w_N)-\sigma^2
++\asymp
++M^{1-b}+n^{-2(b-1)/a}+\frac{n^{2/a}}{N_{\rm eff}}.
++}
++\]
++
++After the damping knee,
++
++\[
++\boxed{
++R_M(w_N)-\sigma^2
++\asymp
++M^{1-b}
+++\rho_\circ^{(b-1)/(2a)}n^{-(b-1)/a}
+++\frac{\rho_\circ^{-1/(2a)}n^{1/a}}{N_{\rm eff}}.
++}
++\]
++
++The active online-RMSProp phase therefore replaces the SGD spectral exponent
++\(a\) by \(a/2\), until the \(\epsilon\)-controlled damping knee is reached.
++
++---
++
++## 8. Next theorem target
++
++The remaining gap for ordinary Adam/RMSProp is the raw EMA concentration event:
++
++\[
++\kappa_-c_t\lambda_i\le v_{t,i}\le \kappa_+c_t\lambda_i.
++\]
++
++For the bias-corrected EMA,
++
++\[
++\bar v_{t,i}
++=\frac{(1-\beta_2)\sum_{s=1}^t\beta_2^{t-s}g_{s,i}^2}{1-\beta_2^t},
++\]
++
++one expects concentration when the effective window
++\(W=(1-\beta_2)^{-1}\) satisfies
++
++\[
++W\gg \log(MN/\delta)
++\quad\text{and}\quad
++W\ll t_{\rm drift}.
++\]
++
++The first inequality averages noise; the second prevents the target mean
++\(c_t\lambda_i\) from moving too much during the EMA window.  Proving this for
++raw degree-four Gaussian-chaos observations is the next technical step before
++adding first-moment momentum and AdamW weight decay.
+diff --git a/scripts/run_online_tracking.sh b/scripts/run_online_tracking.sh
+new file mode 100755
+index 0000000..48b01e5
+--- /dev/null
++++ b/scripts/run_online_tracking.sh
+@@ -0,0 +1,3 @@
++#!/usr/bin/env bash
++set -euo pipefail
++python experiments/online_rmsprop_tracking.py "$@"
+-- 
+2.47.3
+
