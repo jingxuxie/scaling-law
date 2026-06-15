@@ -20,17 +20,11 @@ including CSVs, a config file, a summary file, and optional plots.
 
 ```bash
 python experiments/run_sweeps.py --quick --mode all
+python experiments/profile_feature_sweep.py --quick
+python experiments/stochastic_training_scaling.py --quick
 ```
 
-This should finish quickly and produce:
-
-```text
-experiments/results/quick/filter_sweep.csv
-experiments/results/quick/alignment_sweep.csv
-experiments/results/quick/config.json
-experiments/results/quick/summary.json
-experiments/results/quick/plots/
-```
+These should finish quickly and produce results under `experiments/results/quick/`, `experiments/results/profile_feature_quick/`, and `experiments/results/stochastic_quick/`.
 
 ### 2. Main deterministic exponent sweep
 
@@ -87,17 +81,53 @@ python experiments/bandlimited_feature_alignment.py \
 This tests the feature-map distinction from `notes/14_bandlimited_gaussian_features.md`:
 
 - aligned/eigenbasis features should show effective slope approximately `-a/2`;
-- band-limited Gaussian features should also show approximately `-a/2`;
+- band-limited Gaussian features should also show approximately `-a/2` when the random-feature covariance is well-conditioned within bands;
 - global Gaussian features should be closer to `-a` when coordinate variances are sufficiently flat.
+
+### 5. Profile-exponent feature sweep
+
+```bash
+python experiments/profile_feature_sweep.py \
+  --outdir experiments/results/profile_feature_main \
+  --dimension 2048 \
+  --a-values 1.25,1.5,2.0 \
+  --theta-values 0,0.25,0.5,0.75,1.0 \
+  --rho 1e-10
+```
+
+This tests the diagnostic theorem:
+
+```text
+theta_hat from coordinate variances  ->  q_eff ≈ theta_hat / 2
+```
+
+The cleanest cases are `synthetic_theta_*`, `aligned`, `flat`, and `bandlimited_orthogonal`.  The Gaussian feature cases are diagnostic because random feature maps also modify the covariance spectrum, not just the coordinate-variance profile.
+
+### 6. Stochastic optimizer training
+
+```bash
+python experiments/stochastic_training_scaling.py \
+  --outdir experiments/results/stochastic_main \
+  --dimension 2048 \
+  --steps 4000 \
+  --checkpoints 100,200,400,800,1600,3200,4000 \
+  --trials 8 \
+  --batch-size 16 \
+  --optimizers sgd,oracle,rmsprop,adam,adamw
+```
+
+This runs actual stochastic mini-batch updates in diagonal Gaussian regression.  It outputs risk curves and `q_eff` diagnostics estimated from the learned second-moment vector.
 
 ## What to send back
 
-After running, please send back:
+After running, please send back the relevant CSVs:
 
 ```text
 experiments/results/<run_name>/filter_sweep.csv
 experiments/results/<run_name>/alignment_sweep.csv
-experiments/results/<run_name>/summary.json
+experiments/results/<run_name>/profile_feature_sweep.csv
+experiments/results/<run_name>/training_curves.csv
+experiments/results/<run_name>/summary.csv
 ```
 
 and any plots under
@@ -121,4 +151,6 @@ adamw_count_slope_obs, adamw_count_slope_pred
 aligned_slope_obs, aligned_slope_pred
 flat_slope_obs, flat_slope_pred
 random_slope_obs, random_slope_pred
+theta_hat, q_eff_obs, q_eff_pred
+risk_mean, q_eff_mean, risk_slope_loglog
 ```
