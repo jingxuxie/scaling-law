@@ -13,6 +13,7 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `notes/07_adam_momentum_filter.md`: Adam first-moment momentum theorem. It proves that `beta1` momentum is a temporal filter: it changes constants and stability margins but leaves the spectral learned-mode count and the emergent `q_eff=1/2` second-moment preconditioning law unchanged.
 - `notes/08_adamw_weight_decay_filter.md`: AdamW decoupled-weight-decay theorem. It proves that AdamW equals Adam's damped `q_eff=1/2` preconditioner plus a separate shrinkage filter, with active cutoff `mu_i >= max(1/n, lambda_wd)` and effective horizon `T_eff = min(n, lambda_wd^{-1})` after scalar normalization.
 - `notes/09_matching_filter_lower_bounds.md`: matching spectral lower-bound theorem. It proves that the bias and variance filters used throughout the notes are sharp for two-slope power-law spectra, including Adam/RMSProp and AdamW learned-mode counts.
+- `notes/10_coordinate_alignment.md`: coordinate-alignment theorem. It proves that diagonal adaptive methods are spectral only when coordinatewise gradient second moments retain spectral information; aligned coordinates give `q_eff=1/2`, while flat/bounded coordinate variances make RMSProp/Adam essentially scalar at exponent level.
 
 ## Manuscript draft materials
 
@@ -26,6 +27,8 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `experiments/raw_ema_tracking.py`: isolates the raw EMA concentration mechanism with product-Gaussian squared-gradient noise and verifies that `v_t \approx d_t lambda` and `q_eff \approx 1/2`.
 - `experiments/adam_momentum_filter.py`: verifies that Adam `beta1` momentum leaves the learned-mode cutoff `N gamma mu_i \asymp 1` unchanged up to constants for a fixed damped `q=1/2` preconditioner.
 - `experiments/adamw_weight_decay_filter.py`: verifies that AdamW decoupled weight decay saturates the learned-mode count at the cutoff `mu_i >= max(1/(N gamma), lambda_wd)`.
+- `experiments/exponent_level_filters.py`: deterministic exponent-level filter experiment. It fits log-log slopes for learned counts and bias filters for SGD, Adam/RMSProp, and AdamW.
+- `experiments/coordinate_alignment.py`: tests the coordinate-alignment theorem by comparing aligned, flat Hadamard, and random-orthogonal optimizer coordinates.
 
 ## Quick sanity checks
 
@@ -35,27 +38,26 @@ python experiments/online_rmsprop_tracking.py
 python experiments/raw_ema_tracking.py
 python experiments/adam_momentum_filter.py
 python experiments/adamw_weight_decay_filter.py
+python experiments/exponent_level_filters.py --quick
+python experiments/coordinate_alignment.py --dimension 512
 ```
 
-Expected AdamW sanity output is roughly:
+Stored quick outputs:
 
-```text
-wd=0.0e+00 K_pred≈K_time, K_half/K_pred=constant
-wd=1.0e-04 K_pred≈min(K_time,K_wd), K_half/K_pred=constant
-wd=1.0e-02 K_pred≈K_wd, K_half/K_pred=constant
-```
+- `experiments/results/quick_exponent_level_filters.txt`
+- `experiments/results/quick_coordinate_alignment.txt`
 
 ## Current status
 
-The diagonal Gaussian optimizer-theory chain is now complete at the level of spectral upper and lower bounds:
+The diagonal Gaussian optimizer-theory chain is complete at the level of spectral upper and lower bounds:
 
 ```text
 RMSProp / Adam / AdamW
-  -> gradient second moments track lambda_i
+  -> gradient second moments track lambda_i in aligned coordinates
   -> q_eff = 1/2 damped spectral preconditioning
   -> learned-mode count K_{rho,1/2}(n)
   -> AdamW replaces n by min(n, lambda_wd^{-1})
   -> sharp bias and variance scaling filters
 ```
 
-The next research target is not another diagonal optimizer theorem unless we want to polish assumptions. The next high-impact step is to test and prove when coordinatewise adaptivity acts spectrally: add coordinate-alignment/random-rotation experiments and extend the theorem strategy from diagonal Gaussian regression to Gaussian-sketched or random-feature regression.
+The newest coordinate-alignment theorem shows when this mechanism survives a change of optimizer basis. The next high-impact target is to extend the proof strategy from diagonal Gaussian coordinates to Gaussian-sketched or random-feature regression, where coordinate/eigenvector alignment is partial rather than perfect.
