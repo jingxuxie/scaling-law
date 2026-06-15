@@ -1,6 +1,6 @@
 # 15. Profile-exponent diagnostics estimate the effective Adam/RMSProp exponent
 
-The previous notes identify three regimes: aligned coordinates, band-limited mixing, and globally mixed coordinates.  This note gives the diagnostic theorem needed for experiments: the empirical slope of coordinate second moments predicts the effective Adam/RMSProp exponent.
+The previous notes identify three regimes: aligned coordinates, band-limited mixing, and globally mixed coordinates. This note gives the diagnostic theorem needed for experiments: the empirical slope of coordinate second moments predicts the effective Adam/RMSProp exponent.
 
 The central message is
 
@@ -23,7 +23,7 @@ Let \(H\) have eigenvalues
     \qquad a>1.
 \]
 
-Partition coordinates into spectral bands \(B_\ell\).  Inside band \(B_\ell\), assume
+Partition coordinates into spectral bands \(B_\ell\). Inside band \(B_\ell\), assume
 
 \[
     \lambda_i\asymp \Lambda_\ell,
@@ -39,7 +39,7 @@ Let the optimizer-coordinate covariance be \(\Sigma\), and suppose the coordinat
 }
 \]
 
-Assume the variance profile has exponent \(	heta\):
+Assume the variance profile has exponent \(\theta\):
 
 \[
 \boxed{
@@ -48,24 +48,14 @@ Assume the variance profile has exponent \(	heta\):
 }
 \]
 
-The cases are:
-
-\[
-\theta=1 \quad\text{aligned or band-limited spectral coordinates},
-\]
-
-and
-
-\[
-\theta=0 \quad\text{flat/global mixing coordinates}.
-\]
+The cases are \(\theta=1\) for aligned or band-limited spectral coordinates, and \(\theta=0\) for flat/global mixing coordinates.
 
 ## 2. Effective spectrum theorem
 
 RMSProp/Adam estimates coordinate second moments proportional to \(\Sigma_{jj}\), so after scalar normalization its diagonal preconditioner has entries
 
 \[
-    D_{jj}=(\Sigma_{jj}+ho)^{-1/2}.
+    D_{jj}=(\Sigma_{jj}+\rho)^{-1/2}.
 \]
 
 The transformed covariance is
@@ -74,12 +64,12 @@ The transformed covariance is
     \widetilde\Sigma=D^{1/2}\Sigma D^{1/2}.
 \]
 
-Assume the coordinate mixing is band-limited, so within \(B_\ell\) the eigenvalues of \(\Sigma_{B_\ell}\) are the original \(\lambda_i\)'s in that band up to constants.  Since \(D_{jj}\asymp(\Delta_\ell+ho)^{-1/2}\) inside the band, the min-max principle gives
+Assume the coordinate mixing is band-limited, so within \(B_\ell\) the eigenvalues of \(\Sigma_{B_\ell}\) are the original \(\lambda_i\)'s in that band up to constants. Since \(D_{jj}\asymp(\Delta_\ell+\rho)^{-1/2}\) inside the band, the min-max principle gives
 
 \[
     \widetilde\mu_i
     \asymp
-    \lambda_i(\Delta_\ell+ho)^{-1/2},
+    \lambda_i(\Delta_\ell+\rho)^{-1/2},
     \qquad i\in B_\ell.
 \]
 
@@ -89,17 +79,17 @@ Using \(\Delta_\ell\asymp\Lambda_\ell^\theta\) and \(\lambda_i\asymp\Lambda_\ell
 \boxed{
     \widetilde\mu_i
     \asymp
-    \lambda_i(\lambda_i^\theta+ho)^{-1/2}.
+    \lambda_i(\lambda_i^\theta+\rho)^{-1/2}.
 }
 \]
 
-In the active, pre-damping regime \(\lambda_i^\theta\ggho\), this becomes
+In the active, pre-damping regime \(\lambda_i^\theta\gg\rho\), this becomes
 
 \[
 \boxed{
     \widetilde\mu_i
     \asymp
-    \lambda_i^{1-	heta/2}.
+    \lambda_i^{1-\theta/2}.
 }
 \]
 
@@ -107,7 +97,7 @@ Therefore, if \(\lambda_i\asymp i^{-a}\), the effective spectral exponent is
 
 \[
 \boxed{
-    \alpha_{\rm eff}=a(1-	heta/2).
+    \alpha_{\rm eff}=a(1-\theta/2).
 }
 \]
 
@@ -133,19 +123,19 @@ Since \(\lambda_i\asymp i^{-a}\), the spectral index knee is
     i_\rho\asymp \rho^{-1/(a\theta)}
 \]
 
-for \(	heta>0\).  The corresponding effective eigenvalue scale is
+for \(\theta>0\). The corresponding effective eigenvalue scale is
 
 \[
-    \mu_{i_\rho}\asymp \rho^{1/\theta-1/2}.
+    \mu_{i_\rho}\asymp \rho^{1/\theta-1/2},
 \]
 
-Thus the effective horizon knee is
+so the effective horizon knee is
 
 \[
     n_\rho\asymp \rho^{-(1/\theta-1/2)}.
 \]
 
-For \(	heta=0\), there is no spectral damping knee from the profile because \(\lambda_i^\theta=1\) is constant.
+For \(\theta=0\), there is no spectral damping knee from the profile because \(\lambda_i^\theta=1\) is constant.
 
 For \(0<\theta\le1\), the learned-mode count is
 
@@ -154,7 +144,7 @@ For \(0<\theta\le1\), the learned-mode count is
 K_{\rho,\theta}(n)
 \asymp
 \begin{cases}
-    n^{1/[a(1-	heta/2)]},
+    n^{1/[a(1-\theta/2)]},
     & n\lesssim \rho^{-(1/\theta-1/2)},\\[4pt]
     \rho^{-1/(2a)}n^{1/a},
     & n\gtrsim \rho^{-(1/\theta-1/2)}.
@@ -187,7 +177,7 @@ Under the source condition
 and in the rough/intermediate source range
 
 \[
-    1<b<a(1-	heta/2)+1,
+    1<b<a(1-\theta/2)+1,
 \]
 
 the sharp spectral-sum results from `09_matching_filter_lower_bounds.md` give
@@ -202,7 +192,7 @@ the sharp spectral-sum results from `09_matching_filter_lower_bounds.md` give
 }
 \]
 
-When \(b\ge a(1-	heta/2)+1\), the smooth-source saturation theorem applies and the bias exponent saturates at \(n^{-1}\), up to a logarithm at the boundary.
+When \(b\ge a(1-\theta/2)+1\), the smooth-source saturation theorem applies and the bias exponent saturates at \(n^{-1}\), up to a logarithm at the boundary.
 
 ## 5. Diagnostic consistency theorem
 
@@ -221,14 +211,15 @@ Assume also that over the same window
 and the log-eigenvalue range is
 
 \[
-    L_J:=\max_{j\in J}\log\lambda_j-\min_{j\in J}\log\lambda_j.
+    L_J:=\max_{j\in J}\log\lambda_j-
+    \min_{j\in J}\log\lambda_j.
 \]
 
-Let \(\widehat\theta\) be the least-squares slope of \(\log \widehat v_j\) versus \(\log \lambda_j\) on \(J\).  Then
+Let \(\widehat\theta\) be the least-squares slope of \(\log \widehat v_j\) versus \(\log \lambda_j\) on \(J\). Then
 
 \[
 \boxed{
-    |\widehat\theta-	heta|\lesssim \frac{\log C}{L_J}.
+    |\widehat\theta-\theta|\lesssim \frac{\log C}{L_J}.
 }
 \]
 
@@ -252,22 +243,22 @@ Write
 
 \[
     \log \widehat v_j=\log d_j+\varepsilon_j,
-    \qquad |arepsilon_j|\le \log C.
+    \qquad |\varepsilon_j|\le \log C.
 \]
 
 Since \(d_j\asymp\lambda_j^\theta\), also
 
 \[
-    \log d_j=c+\theta\log\lambda_j+\eta_j,
+    \log d_j=c+\theta\log\lambda_j+\eta_j
 \]
 
-with bounded \(\eta_j\).  Least squares is Lipschitz in the response with operator norm controlled by the inverse spread of the regressor.  The perturbation of the slope is bounded by a constant times
+with bounded \(\eta_j\). Least squares is Lipschitz in the response with operator norm controlled by the inverse spread of the regressor. The perturbation of the slope is bounded by a constant times
 
 \[
-    \frac{\max_j|arepsilon_j|+\max_j|\eta_j|}{L_J}.
+    \frac{\max_j|\varepsilon_j|+\max_j|\eta_j|}{L_J}.
 \]
 
-Absorbing the fixed profile-comparability constants gives the stated bound.  Dividing by two gives the \(q_{\rm eff}\) estimate.
+Absorbing the fixed profile-comparability constants gives the stated bound. Dividing by two gives the \(q_{\rm eff}\) estimate.
 
 ## 6. Experimental implication
 
@@ -285,4 +276,4 @@ The experiments should report three quantities:
 }
 \]
 
-This turns the alignment story into a measurable prediction.  A feature map that gives \(\widehat\theta\approx1\) should display Adam/RMSProp spectral gains.  A feature map that gives \(\widehat\theta\approx0\) should behave more like scalar preconditioning.  Intermediate profiles should interpolate continuously.
+This turns the alignment story into a measurable prediction. A feature map that gives \(\widehat\theta\approx1\) should display Adam/RMSProp spectral gains. A feature map that gives \(\widehat\theta\approx0\) should behave more like scalar preconditioning. Intermediate profiles should interpolate continuously.
