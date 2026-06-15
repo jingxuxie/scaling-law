@@ -14,6 +14,7 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `notes/08_adamw_weight_decay_filter.md`: AdamW decoupled-weight-decay theorem. It proves that AdamW equals Adam's damped `q_eff=1/2` preconditioner plus a separate shrinkage filter, with active cutoff `mu_i >= max(1/n, lambda_wd)` and effective horizon `T_eff = min(n, lambda_wd^{-1})` after scalar normalization.
 - `notes/09_matching_filter_lower_bounds.md`: matching spectral lower-bound theorem. It proves that the bias and variance filters used throughout the notes are sharp for two-slope power-law spectra, including Adam/RMSProp and AdamW learned-mode counts.
 - `notes/10_coordinate_alignment.md`: coordinate-alignment theorem. It proves that diagonal adaptive methods are spectral only when coordinatewise gradient second moments retain spectral information; aligned coordinates give `q_eff=1/2`, while flat/bounded coordinate variances make RMSProp/Adam essentially scalar at exponent level.
+- `notes/11_bandlimited_partial_alignment.md`: band-limited partial-alignment theorem. It proves that arbitrary rotations within comparable-eigenvalue bands preserve the Adam/RMSProp `q_eff=1/2` exponent up to constants, while broad cross-band mixing can destroy spectral adaptivity.
 
 ## Manuscript draft materials
 
@@ -21,6 +22,8 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 
 ## Experiments
 
+- `experiments/README.md`: local experiment-running instructions and recommended commands.
+- `experiments/run_sweeps.py`: main local sweep runner for deterministic exponent-level filters and coordinate-alignment experiments.
 - `experiments/synthetic_damped_preconditioning.py`: oracle damped spectral-preconditioning sanity check.
 - `experiments/frozen_rmsprop_bridge.py`: verifies the gradient-second-moment bridge `v_i \propto lambda_i` and compares frozen RMSProp to the oracle `q=1/2` preconditioner.
 - `experiments/online_rmsprop_tracking.py`: checks that online RMSProp has `slope(log v_t, log lambda) \approx 1`, `q_eff \approx 1/2`, and `v_t \approx d_t lambda` in diagonal Gaussian regression.
@@ -40,6 +43,7 @@ python experiments/adam_momentum_filter.py
 python experiments/adamw_weight_decay_filter.py
 python experiments/exponent_level_filters.py --quick
 python experiments/coordinate_alignment.py --dimension 512
+python experiments/run_sweeps.py --quick --mode all
 ```
 
 Stored quick outputs:
@@ -60,4 +64,4 @@ RMSProp / Adam / AdamW
   -> sharp bias and variance scaling filters
 ```
 
-The newest coordinate-alignment theorem shows when this mechanism survives a change of optimizer basis. The next high-impact target is to extend the proof strategy from diagonal Gaussian coordinates to Gaussian-sketched or random-feature regression, where coordinate/eigenvector alignment is partial rather than perfect.
+The coordinate-alignment and band-limited partial-alignment theorems now explain when this mechanism survives a change of optimizer basis. The next high-impact target is to extend the proof strategy from band-limited alignment to Gaussian-sketched or random-feature regression, where coordinate/eigenvector alignment is partial and data-dependent.
