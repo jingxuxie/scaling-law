@@ -1,0 +1,13 @@
+{
+  "a": 3.0,
+  "b": 1.4,
+  "c_max": 10000000000.0,
+  "c_min": 10000.0,
+  "grid_size": 600,
+  "no_plots": false,
+  "num_c": 40,
+  "outdir": "experiments/results/compute_optimal_weight_decay_schedule",
+  "quick": false,
+  "s_values": "0,0.05,0.1,0.2,0.4,0.8",
+  "theta_values": "0,0.5,1"
+}
