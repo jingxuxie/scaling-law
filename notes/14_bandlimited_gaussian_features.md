@@ -1,18 +1,6 @@
 # 14. Band-limited Gaussian features preserve Adam/RMSProp spectral gains
 
-The previous two alignment notes give two extremes:
-
-\[
-\text{global Gaussian sketch} \Rightarrow q_{\rm eff}=0
-\]
-
-under high-effective-rank flattening, while
-
-\[
-\text{band-limited deterministic mixing} \Rightarrow q_{\rm eff}=1/2.
-\]
-
-This note proves the random-feature analogue of the second statement.  If random features are Gaussian **within spectral bands**, rather than globally across all eigendirections, then coordinatewise RMSProp/Adam still sees band-scale coordinate variances and preserves the aligned \(q_{\rm eff}=1/2\) scaling law.
+The global-sketch theorem shows that a fully mixed Gaussian sketch can flatten coordinate variances and make diagonal Adam/RMSProp approximately scalar.  This note proves the complementary random-feature result: if random features are Gaussian **within comparable-eigenvalue spectral bands**, then coordinatewise Adam/RMSProp still sees band-scale second moments and preserves the aligned \(q_{\rm eff}=1/2\) scaling law.
 
 ## 1. Band-limited Gaussian feature model
 
@@ -24,14 +12,14 @@ Let
     \lambda_1\ge\lambda_2\ge\cdots>0.
 \]
 
-Partition the eigencoordinates into contiguous bands
+Partition eigencoordinates into contiguous bands
 
 \[
     B_1,\ldots,B_L,
     \qquad |B_\ell|=d_\ell.
 \]
 
-Assume the eigenvalues in band \(B_\ell\) are comparable: for a scale \(\Lambda_\ell\) and a constant \(\kappa\ge1\),
+Assume eigenvalues in band \(B_\ell\) are comparable: for a band scale \(\Lambda_\ell\) and constant \(\kappa\ge1\),
 
 \[
 \boxed{
@@ -66,9 +54,7 @@ The feature covariance is
     \operatorname{blockdiag}(S_1H_1S_1^\top,\ldots,S_LH_LS_L^\top),
 \]
 
-where \(H_\ell=H|_{B_\ell}\).
-
-Assume the row aspect ratios are bounded away from the square singular edge:
+where \(H_\ell=H|_{B_\ell}\).  Assume the row aspect ratios satisfy
 
 \[
 \boxed{
@@ -76,11 +62,11 @@ Assume the row aspect ratios are bounded away from the square singular edge:
 }
 \]
 
-The upper bound \(\gamma_{\max}<1\) is a clean sufficient condition for all nonzero singular values of \(S_\ell\) to be bounded above and below by constants.  Other aspect-ratio regimes can be handled with the usual rank/truncation modifications.
+The condition \(\gamma_{\max}<1\) is a clean sufficient condition ensuring that the nonzero singular values of each Gaussian block are bounded above and below by constants with high probability.
 
 ## 2. Coordinate variances concentrate at the band scale
 
-For a feature coordinate \(j\) in band \(\ell\), let \(s_{\ell,j}\) be the corresponding row of \(S_\ell\).  The coordinate variance seen by diagonal RMSProp/Adam is
+For feature coordinate \(j\) in band \(\ell\), let \(s_{\ell,j}\) be the corresponding row of \(S_\ell\).  The coordinate variance seen by diagonal RMSProp/Adam is
 
 \[
     d_{\ell,j}=s_{\ell,j}^\top H_\ell s_{\ell,j}.
@@ -104,10 +90,12 @@ By band comparability,
 }
 \]
 
-Since the band has effective rank
+Since
 
 \[
-    r_{\rm eff}(H_\ell)=\frac{\operatorname{tr}(H_\ell)^2}{\operatorname{tr}(H_\ell^2)}
+    r_{\rm eff}(H_\ell)
+    =
+    \frac{\operatorname{tr}(H_\ell)^2}{\operatorname{tr}(H_\ell^2)}
     \gtrsim_\kappa d_\ell,
 \]
 
@@ -160,19 +148,17 @@ Therefore
     \kappa\Lambda_\ell S_\ell S_\ell^\top.
 \]
 
-Gaussian singular-value concentration implies that, with probability at least
+Gaussian singular-value concentration implies that, with probability at least \(1-2\exp(-c_\gamma d_\ell)\),
 
 \[
-    1-2\exp(-c_{\gamma}d_\ell),
+    c_\gamma I_{m_\ell}
+    \preceq
+    S_\ell S_\ell^\top
+    \preceq
+    C_\gamma I_{m_\ell}.
 \]
 
-all eigenvalues of \(S_\ell S_\ell^\top\) lie in a constant interval
-
-\[
-    c_\gamma I_{m_\ell}\preceq S_\ell S_\ell^\top\preceq C_\gamma I_{m_\ell}.
-\]
-
-Consequently, on a high-probability event,
+Consequently,
 
 \[
 \boxed{
@@ -203,7 +189,9 @@ Ignoring the scalar residual factor, the diagonal preconditioner is
 On the coordinate-variance event, within band \(\ell\),
 
 \[
-    D_{\rho,\ell}\asymp_{\kappa,\varepsilon}(\Lambda_\ell+ho)^{-1/2}I_{m_\ell}.
+    D_{\rho,\ell}
+    \asymp_{\kappa,\varepsilon}
+    (\Lambda_\ell+\rho)^{-1/2}I_{m_\ell}.
 \]
 
 The transformed feature covariance is
@@ -216,11 +204,13 @@ Therefore, in each band,
 
 \[
 \boxed{
-    c_{\kappa,\gamma,\varepsilon}\Lambda_\ell(\Lambda_\ell+ho)^{-1/2}I_{m_\ell}
+    c_{\kappa,\gamma,\varepsilon}
+    \Lambda_\ell(\Lambda_\ell+\rho)^{-1/2}I_{m_\ell}
     \preceq
     \widetilde\Sigma_\ell
     \preceq
-    C_{\kappa,\gamma,\varepsilon}\Lambda_\ell(\Lambda_\ell+ho)^{-1/2}I_{m_\ell}.
+    C_{\kappa,\gamma,\varepsilon}
+    \Lambda_\ell(\Lambda_\ell+\rho)^{-1/2}I_{m_\ell}.
 }
 \]
 
@@ -228,7 +218,7 @@ Thus every effective eigenvalue coming from band \(\ell\) is comparable to
 
 \[
 \boxed{
-    \Lambda_\ell(\Lambda_\ell+ho)^{-1/2}.
+    \Lambda_\ell(\Lambda_\ell+\rho)^{-1/2}.
 }
 \]
 
@@ -236,7 +226,7 @@ Since \(\lambda_i\asymp\Lambda_\ell\) for \(i\in B_\ell\), this is the same spec
 
 \[
 \boxed{
-    \widetilde\mu_i\asymp \lambda_i(\lambda_i+ho)^{-1/2}
+    \widetilde\mu_i\asymp \lambda_i(\lambda_i+\rho)^{-1/2}
 }
 \]
 
@@ -254,7 +244,7 @@ Assume:
 Then with probability at least \(1-\delta\), the band-limited Gaussian feature map has Adam/RMSProp effective eigenvalues comparable to
 
 \[
-    \lambda_i(\lambda_i+ho)^{-1/2}
+    \lambda_i(\lambda_i+\rho)^{-1/2}
 \]
 
 up to constants depending only on the band comparability, aspect-ratio, and concentration parameters.
