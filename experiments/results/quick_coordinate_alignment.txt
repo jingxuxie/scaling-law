@@ -1,0 +1,23 @@
+Command:
+python experiments/coordinate_alignment.py --dimension 512
+
+Output:
+coordinate_alignment_experiment
+dimension=512
+a=1.5
+rho=1e-08
+
+case,eigen_slope,predicted
+original_SGD,-1.5000,-1.5000
+aligned_RMSProp_Adam,-0.7500,-0.7500
+flat_Hadamard_coordinates,-1.5000,-1.5000
+
+coordinate_second_moment_diagnostics
+aligned_diag_slope=-1.5000
+flat_diag_min_over_max=1.0000
+random_orthogonal_effective,-1.5270,near -1.5000
+random_diag_min=1.5229e-03
+random_diag_median=3.9708e-03
+random_diag_max=2.2671e-02
+random_diag_condition=14.887
+random_diag_slope=-0.5802
