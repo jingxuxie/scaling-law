@@ -1,14 +1,6 @@
 # 16. Bounded diagonal preconditioners cannot change spectral exponents
 
-The sketch-visibility sweep shows an important diagnostic caveat.  In Haar and
-global Gaussian-sketch coordinates, the sorted coordinate-variance profile can
-have a nonzero finite-dimensional slope, but the effective spectral exponent is
-still essentially unchanged.  The reason is that the diagonal preconditioner is
-not spectrally aligned with the covariance, and in many globally mixed cases it
-is bounded in condition number.  A bounded diagonal preconditioner can change
-constants but not power-law eigenvalue exponents.
-
-This note makes that statement precise.
+The sketch-visibility sweep shows an important diagnostic caveat. In Haar and global Gaussian-sketch coordinates, the sorted coordinate-variance profile can have a nonzero finite-dimensional slope, but the effective spectral exponent is still essentially unchanged. The reason is that the diagonal preconditioner is not spectrally aligned with the covariance, and in many globally mixed cases it is bounded in condition number. A bounded diagonal preconditioner can change constants but not power-law eigenvalue exponents.
 
 ## 1. Setup
 
@@ -19,8 +11,7 @@ Let \(\Sigma\succeq0\) have eigenvalues
     \qquad a>0.
 \]
 
-Let \(P\succ0\) be any positive diagonal preconditioner in the optimizer
-coordinates.  The transformed covariance is
+Let \(P\succ0\) be any positive diagonal preconditioner in the optimizer coordinates. The transformed covariance is
 
 \[
     \widetilde\Sigma=P^{1/2}\Sigma P^{1/2}.
@@ -90,14 +81,11 @@ congruence by \(\Sigma^{1/2}\) gives
     p_{\max}\Sigma.
 \]
 
-The matrices \(P^{1/2}\Sigma P^{1/2}\) and
-\(\Sigma^{1/2}P\Sigma^{1/2}\) have the same nonzero eigenvalues.  The min-max
-principle therefore implies the stated eigenvalue sandwich.
+The matrices \(P^{1/2}\Sigma P^{1/2}\) and \(\Sigma^{1/2}P\Sigma^{1/2}\) have the same nonzero eigenvalues. The min-max principle therefore implies the stated eigenvalue sandwich.
 
 ## 2. Sub-polynomial condition numbers
 
-The same conclusion holds at exponent level if the preconditioner condition
-number grows sub-polynomially with dimension.  Suppose
+The same conclusion holds at exponent level if the preconditioner condition number grows sub-polynomially with dimension. Suppose
 
 \[
     \kappa_P(M)=M^{o(1)}.
@@ -106,16 +94,12 @@ number grows sub-polynomially with dimension.  Suppose
 Then, over ranks \(i\le M\), the eigenvalue sandwich becomes
 
 \[
-    \lambda_i(\widetilde\Sigma)
-    =
-    i^{-a+o(1)}
+    \lambda_i(\widetilde\Sigma)=i^{-a+o(1)}
 \]
 
-whenever \(\lambda_i(\Sigma)=i^{-a+o(1)}\).  Thus no fixed positive exponent
-improvement can be inferred from such a preconditioner.
+whenever \(\lambda_i(\Sigma)=i^{-a+o(1)}\). Thus no fixed positive exponent improvement can be inferred from such a preconditioner.
 
-This explains why globally mixed coordinates can have finite-dimensional sorted
-diagonal slopes without producing a true Adam/RMSProp spectral exponent shift.
+This explains why globally mixed coordinates can have finite-dimensional sorted diagonal slopes without producing a true Adam/RMSProp spectral exponent shift.
 
 ## 3. Implication for coordinate-variance diagnostics
 
@@ -128,20 +112,16 @@ Let
 and
 
 \[
-    P_j=(d_j+ho)^{-1/2}.
+    P_j=(d_j+\rho)^{-1/2}.
 \]
 
-A sorted power-law slope in \(d_j\) is **not sufficient** to conclude
-\(q_{\rm eff}=\theta/2\).  That conclusion requires spectral alignment or a
-Loewner/spectral-comparability condition such as
+A sorted power-law slope in \(d_j\) is **not sufficient** to conclude \(q_{\rm eff}=\theta/2\). That conclusion requires spectral alignment or a Loewner/spectral-comparability condition such as
 
 \[
     P\asymp f(\Sigma)
 \]
 
-for a spectral function \(f\).  Without such alignment, \(P\) may be merely a
-bounded diagonal rescaling in a basis that does not commute with \(\Sigma\), and
-then Theorem 1 says the spectral exponent is unchanged.
+for a spectral function \(f\). Without such alignment, \(P\) may be merely a bounded diagonal rescaling in a basis that does not commute with \(\Sigma\), and then Theorem 1 says the spectral exponent is unchanged.
 
 Thus the right empirical diagnostics are:
 
@@ -153,8 +133,7 @@ Thus the right empirical diagnostics are:
     \frac{\|P\Sigma-\Sigma P\|_{\rm op}}{\|P\Sigma\|_{\rm op}};
 \]
 
-4. the coordinate-variance profile slope only when alignment or low commutator
-   has already been established.
+4. the coordinate-variance profile slope only when alignment or low commutator has already been established.
 
 ## 4. Relation to the sketch-visibility experiment
 
@@ -168,19 +147,14 @@ The sketch-visibility sweep shows:
 \end{array}
 \]
 
-This theorem explains the third line.  Even if the sorted diagonal profile has a
-moderate finite-dimensional slope, the preconditioner may be bounded and
-non-commuting, so it cannot change the covariance eigenvalue exponent.
+This theorem explains the third line. Even if the sorted diagonal profile has a moderate finite-dimensional slope, the preconditioner may be bounded and non-commuting, so it cannot change the covariance eigenvalue exponent.
 
 ## 5. Paper-level takeaway
 
-For a high-impact theorem, the main object should not be the sorted diagonal of
-\(\Sigma\) alone.  It should be **visible spectral preconditioning**:
+For a high-impact theorem, the main object should not be the sorted diagonal of \(\Sigma\) alone. It should be **visible spectral preconditioning**:
 
 \[
-    P^{1/2}\Sigma P^{1/2}
+    P^{1/2}\Sigma P^{1/2},
 \]
 
-or sufficient conditions that make \(P\) comparable to a spectral function of
-\(\Sigma\).  This is the right bridge from diagonal Gaussian regression to
-sketched/random-feature models.
+or sufficient conditions that make \(P\) comparable to a spectral function of \(\Sigma\). This is the right bridge from diagonal Gaussian regression to sketched/random-feature models.
