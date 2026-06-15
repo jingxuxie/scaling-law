@@ -23,6 +23,8 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `notes/16_source_condition_stability.md`: source-condition stability theorem. It proves that spectral preconditioners preserve source energies exactly, and invariant band decompositions preserve block source mass, justifying the transformed-source assumption in aligned and band-limited settings.
 - `notes/17_compute_optimal_visible_spectrum.md`: compute-optimal visible-spectrum theorem. It derives the optimal allocation `M_*(C)`, `N_*(C)`, and compute-risk exponent as a function of the visible exponent `theta`.
 - `notes/18_weight_decay_compute_ceiling.md`: AdamW compute-ceiling theorem. It proves that fixed decoupled weight decay imposes a finite effective-horizon ceiling and that weight decay must scale down with compute to preserve the no-decay exponent.
+- `notes/20_compute_optimal_weight_decay_scaling.md`: compute-optimal weight-decay schedule theorem. It proves the exponent `beta_wd(theta,s)=min((b-1)s/alpha, (b-1)/(max(alpha,b)+1))` for `delta(C)=C^{-s}`.
+- `notes/21_random_feature_visibility_prediction.md`: random-feature visibility prediction theorem. It states the feature-map criterion under which measured coordinate-variance visibility predicts `q_eff≈theta/2`.
 
 ## Manuscript draft materials
 
@@ -41,6 +43,8 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `experiments/source_condition_diagnostic.py`: measures transformed-source exponents after applying coordinatewise preconditioners.
 - `experiments/compute_optimal_visible_spectrum.py`: optimizes the spectral risk proxy over `M,N` under compute `C≈MN` and checks the visible-spectrum compute-optimal phase diagram.
 - `experiments/weight_decay_compute_sweep.py`: tests the AdamW prediction that fixed weight decay creates a compute horizon ceiling while compute-scaled weight decay preserves the no-decay exponent.
+- `experiments/compute_optimal_weight_decay_schedule.py`: tests the compute-dependent AdamW schedule law `delta(C)=C^{-s}`.
+- `experiments/random_feature_visibility_experiment.py`: measures visible spectral information and optional stochastic training in aligned, band-limited, global Gaussian, and flat feature maps.
 - `experiments/synthetic_damped_preconditioning.py`: oracle damped spectral-preconditioning sanity check.
 - `experiments/frozen_rmsprop_bridge.py`: verifies the gradient-second-moment bridge `v_i \propto lambda_i` and compares frozen RMSProp to the oracle `q=1/2` preconditioner.
 - `experiments/online_rmsprop_tracking.py`: checks that online RMSProp has `slope(log v_t, log lambda) \approx 1`, `q_eff \approx 1/2`, and `v_t \approx d_t lambda` in diagonal Gaussian regression.
@@ -56,6 +60,7 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `experiments/results/analysis_after_second_batch.md`: analysis of the stochastic-training and sketch-visibility sweeps.
 - `experiments/results/analysis_after_stochastic_alignment.md`: analysis after stochastic coordinate-alignment experiments, with recommended next runs.
 - `experiments/results/COMPUTE_OPTIMAL_VISIBLE_REVIEW.md`: analysis of the compute-optimal visible-spectrum results and recommended follow-up runs.
+- `experiments/results/WEIGHT_DECAY_SCHEDULE_REVIEW.md`: analysis of compute-dependent AdamW decay schedules.
 
 ## Quick sanity checks
 
@@ -77,6 +82,8 @@ python experiments/stochastic_alignment_lr_grid.py --quick
 python experiments/source_condition_diagnostic.py --quick
 python experiments/compute_optimal_visible_spectrum.py --quick
 python experiments/weight_decay_compute_sweep.py --quick
+python experiments/compute_optimal_weight_decay_schedule.py --quick
+python experiments/random_feature_visibility_experiment.py --quick
 ```
 
 ## Current status
@@ -89,6 +96,7 @@ coordinatewise second moments expose spectral structure
   -> visible-spectrum learned-mode count
   -> optimizer-dependent scaling filters
   -> compute-optimal allocation and compute-risk exponent
+  -> AdamW decay must scale down with compute to preserve the no-decay exponent
 ```
 
-Aligned and band-limited coordinates preserve `q_eff≈1/2`; flat, Haar, and global Gaussian-sketch coordinates behave like `q_eff≈0`. Learning-rate calibrated stochastic experiments support the same diagnostic. The newest compute-optimal experiment supports the visible-spectrum allocation law and clarifies the hard-source versus variance-limited phases. The remaining empirical gaps for a high-impact paper are AdamW compute-ceiling sweeps and larger random-feature/source-condition diagnostics.
+Aligned and band-limited coordinates preserve `q_eff≈1/2`; flat, Haar, and global Gaussian-sketch coordinates behave like `q_eff≈0`. Learning-rate calibrated stochastic experiments support the same diagnostic. The compute-optimal and weight-decay schedule experiments support the visible-spectrum allocation law and AdamW decay-scaling law. The main remaining empirical gap for a high-impact paper is a larger random-feature experiment with measured visibility and optional stochastic training.
