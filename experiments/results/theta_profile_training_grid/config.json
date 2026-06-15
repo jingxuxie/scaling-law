@@ -1,0 +1,16 @@
+{
+  "a": 1.5,
+  "b": 1.4,
+  "batch_size": 16,
+  "checkpoints": "250,500,1000,2000,4000,8000",
+  "dimension": 2048,
+  "lr_values": "0.001,0.003,0.005,0.01,0.03",
+  "no_plots": false,
+  "outdir": "experiments/results/theta_profile_training_grid",
+  "quick": false,
+  "rho": 1e-08,
+  "seed": 0,
+  "sigma": 0.1,
+  "theta_values": "0,0.25,0.5,0.75,1",
+  "trials": 5
+}

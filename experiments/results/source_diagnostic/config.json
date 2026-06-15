@@ -1,0 +1,12 @@
+{
+  "a_values": "1.25,1.5,2.0",
+  "b_values": "1.2,1.4,1.8",
+  "band_kappa": 2.0,
+  "cases": "aligned,band,flat,haar",
+  "dimension": 512,
+  "no_plots": false,
+  "outdir": "experiments/results/source_diagnostic",
+  "quick": false,
+  "rho": 1e-08,
+  "seed": 0
+}
