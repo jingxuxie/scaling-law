@@ -22,6 +22,7 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `notes/16_bounded_preconditioner_no_exponent_change.md`: bounded-preconditioner theorem. It proves that bounded or sub-polynomial condition-number diagonal preconditioners cannot change power-law spectral exponents.
 - `notes/16_source_condition_stability.md`: source-condition stability theorem. It proves that spectral preconditioners preserve source energies exactly, and invariant band decompositions preserve block source mass, justifying the transformed-source assumption in aligned and band-limited settings.
 - `notes/17_compute_optimal_visible_spectrum.md`: compute-optimal visible-spectrum theorem. It derives the optimal allocation `M_*(C)`, `N_*(C)`, and compute-risk exponent as a function of the visible exponent `theta`.
+- `notes/18_weight_decay_compute_ceiling.md`: AdamW compute-ceiling theorem. It proves that fixed decoupled weight decay imposes a finite effective-horizon ceiling and that weight decay must scale down with compute to preserve the no-decay exponent.
 
 ## Manuscript draft materials
 
@@ -39,6 +40,7 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `experiments/stochastic_alignment_lr_grid.py`: runs a learning-rate grid for stochastic alignment experiments, so risk comparisons are not dominated by a single hand-picked step size.
 - `experiments/source_condition_diagnostic.py`: measures transformed-source exponents after applying coordinatewise preconditioners.
 - `experiments/compute_optimal_visible_spectrum.py`: optimizes the spectral risk proxy over `M,N` under compute `C≈MN` and checks the visible-spectrum compute-optimal phase diagram.
+- `experiments/weight_decay_compute_sweep.py`: tests the AdamW prediction that fixed weight decay creates a compute horizon ceiling while compute-scaled weight decay preserves the no-decay exponent.
 - `experiments/synthetic_damped_preconditioning.py`: oracle damped spectral-preconditioning sanity check.
 - `experiments/frozen_rmsprop_bridge.py`: verifies the gradient-second-moment bridge `v_i \propto lambda_i` and compares frozen RMSProp to the oracle `q=1/2` preconditioner.
 - `experiments/online_rmsprop_tracking.py`: checks that online RMSProp has `slope(log v_t, log lambda) \approx 1`, `q_eff \approx 1/2`, and `v_t \approx d_t lambda` in diagonal Gaussian regression.
@@ -53,6 +55,7 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `experiments/results/analysis_2026_06_15.md`: analysis of the first filter and alignment sweeps.
 - `experiments/results/analysis_after_second_batch.md`: analysis of the stochastic-training and sketch-visibility sweeps.
 - `experiments/results/analysis_after_stochastic_alignment.md`: analysis after stochastic coordinate-alignment experiments, with recommended next runs.
+- `experiments/results/COMPUTE_OPTIMAL_VISIBLE_REVIEW.md`: analysis of the compute-optimal visible-spectrum results and recommended follow-up runs.
 
 ## Quick sanity checks
 
@@ -73,6 +76,7 @@ python experiments/stochastic_alignment_scaling.py --quick
 python experiments/stochastic_alignment_lr_grid.py --quick
 python experiments/source_condition_diagnostic.py --quick
 python experiments/compute_optimal_visible_spectrum.py --quick
+python experiments/weight_decay_compute_sweep.py --quick
 ```
 
 ## Current status
@@ -87,4 +91,4 @@ coordinatewise second moments expose spectral structure
   -> compute-optimal allocation and compute-risk exponent
 ```
 
-Aligned and band-limited coordinates preserve `q_eff≈1/2`; flat, Haar, and global Gaussian-sketch coordinates behave like `q_eff≈0`. Learning-rate calibrated stochastic experiments support the same diagnostic. The remaining empirical gaps for a high-impact paper are compute-optimal visible-spectrum experiments and larger random-feature/source-condition diagnostics.
+Aligned and band-limited coordinates preserve `q_eff≈1/2`; flat, Haar, and global Gaussian-sketch coordinates behave like `q_eff≈0`. Learning-rate calibrated stochastic experiments support the same diagnostic. The newest compute-optimal experiment supports the visible-spectrum allocation law and clarifies the hard-source versus variance-limited phases. The remaining empirical gaps for a high-impact paper are AdamW compute-ceiling sweeps and larger random-feature/source-condition diagnostics.
