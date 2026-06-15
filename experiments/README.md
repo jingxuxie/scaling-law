@@ -53,7 +53,7 @@ This tests the predicted slopes for:
 - SGD learned-mode count: approximately `1/a`;
 - Adam/RMSProp learned-mode count before damping: approximately `2/a`;
 - SGD bias: approximately `-(b-1)/a`;
-- Adam/RMSProp bias before damping: approximately `-2(b-1)/a`;
+- Adam/RMSProp bias before damping: approximately `-2(b-1)/a` in the clean source regime, saturating at `-1` in the smooth-source regime;
 - AdamW saturation after the weight-decay horizon.
 
 ### 3. Coordinate-alignment sweep
@@ -74,6 +74,22 @@ This tests the coordinate-alignment theorem:
 - flat/Hadamard coordinates should show slope approximately `-a`, i.e. no exponent improvement;
 - random orthogonal coordinates should usually be closer to the flat/SGD-like behavior than the aligned behavior.
 
+### 4. Band-limited versus global Gaussian features
+
+```bash
+python experiments/bandlimited_feature_alignment.py \
+  --dimension 2048 \
+  --a 1.5 \
+  --rho 1e-10 \
+  --row-fraction 0.5
+```
+
+This tests the feature-map distinction from `notes/14_bandlimited_gaussian_features.md`:
+
+- aligned/eigenbasis features should show effective slope approximately `-a/2`;
+- band-limited Gaussian features should also show approximately `-a/2`;
+- global Gaussian features should be closer to `-a` when coordinate variances are sufficiently flat.
+
 ## What to send back
 
 After running, please send back:
@@ -88,6 +104,12 @@ and any plots under
 
 ```text
 experiments/results/<run_name>/plots/
+```
+
+For the band-limited feature experiment, paste the terminal output or redirect it to a file:
+
+```bash
+python experiments/bandlimited_feature_alignment.py --dimension 2048 > experiments/results/bandlimited_feature_alignment.txt
 ```
 
 The most useful columns are the observed/predicted slope pairs, for example:
