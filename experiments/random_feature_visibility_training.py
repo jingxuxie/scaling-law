@@ -1,0 +1,374 @@
+"""Stochastic training with measured spectral visibility in feature coordinates.
+
+This experiment is the bridge from the diagonal/coordinate-alignment toy model to
+random-feature and sketched-linear settings.  It constructs a covariance Sigma in
+optimizer coordinates, builds a target satisfying a source condition in the
+population eigenbasis of Sigma, trains real stochastic optimizers, and measures
+whether the coordinatewise second moments expose spectral structure.
+
+Main question
+-------------
+Does the observed optimizer diagnostic q_eff match the visible spectral
+information of the feature map?
+
+Expected pattern
+----------------
+aligned / band-limited  -> q_eff ~= 1/2
+haar / global Gaussian  -> q_eff ~= 0
+spectral_oracle         -> q_eff ~= 1/2 in every basis
+
+Examples
+--------
+python experiments/random_feature_visibility_training.py --quick
+
+python experiments/random_feature_visibility_training.py \
+  --dimension 256 \
+  --ambient-dim 2048 \
+  --cases aligned,band,haar,gaussian_sketch \
+  --optimizers sgd,rmsprop,adam,adamw,coord_oracle,spectral_oracle \
+  --lr-sgd-values 0.03,0.1 \
+  --lr-adaptive-values 0.001,0.003,0.01 \
+  --checkpoints 250,500,1000,2000,4000,8000 \
+  --trials 5 \
+  --outdir experiments/results/random_feature_visibility_training
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import math
+from pathlib import Path
+
+import numpy as np
+
+try:
+    import matplotlib.pyplot as plt
+except Exception:  # pragma: no cover
+    plt = None
+
+
+def parse_list(text: str, typ=str):
+    return [typ(x.strip()) for x in text.split(",") if x.strip()]
+
+
+def fit_power_slope(values: np.ndarray, lo: float = 0.10, hi: float = 0.80) -> float:
+    vals = np.sort(np.asarray(values, dtype=float))[::-1]
+    vals = vals[np.isfinite(vals) & (vals > 0)]
+    if len(vals) < 20:
+        return float("nan")
+    n = len(vals)
+    a = int(lo * n)
+    b = max(a + 10, int(hi * n))
+    b = min(b, n)
+    ranks = np.arange(1, n + 1, dtype=float)
+    X = np.vstack([np.ones(b - a), np.log(ranks[a:b])]).T
+    coef, *_ = np.linalg.lstsq(X, np.log(vals[a:b]), rcond=None)
+    return float(coef[1])
+
+
+def fit_slope(x: np.ndarray, y: np.ndarray, lo: float = 0.2, hi: float = 1.0) -> float:
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    mask = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
+    x = x[mask]
+    y = y[mask]
+    if len(x) < 4:
+        return float("nan")
+    a = int(lo * len(x))
+    b = max(a + 3, int(hi * len(x)))
+    b = min(b, len(x))
+    X = np.vstack([np.ones(b - a), np.log(x[a:b])]).T
+    coef, *_ = np.linalg.lstsq(X, np.log(y[a:b]), rcond=None)
+    return float(coef[1])
+
+
+def random_orthogonal(rng: np.random.Generator, d: int) -> np.ndarray:
+    z = rng.normal(size=(d, d))
+    q, r = np.linalg.qr(z)
+    signs = np.sign(np.diag(r))
+    signs[signs == 0] = 1.0
+    return q * signs
+
+
+def make_bands(lam: np.ndarray, kappa: float) -> list[slice]:
+    bands: list[slice] = []
+    start = 0
+    n = len(lam)
+    while start < n:
+        end = start + 1
+        base = lam[start]
+        while end < n and base / lam[end] <= kappa:
+            end += 1
+        bands.append(slice(start, end))
+        start = end
+    return bands
+
+
+def block_random_rotation(rng: np.random.Generator, lam: np.ndarray, kappa: float) -> np.ndarray:
+    d = len(lam)
+    sigma = np.zeros((d, d), dtype=float)
+    for sl in make_bands(lam, kappa):
+        block_lam = lam[sl]
+        q = random_orthogonal(rng, len(block_lam))
+        sigma[sl, sl] = q.T @ np.diag(block_lam) @ q
+    return sigma
+
+
+def make_covariance(case: str, d: int, ambient_dim: int, a: float, rng: np.random.Generator, band_kappa: float) -> np.ndarray:
+    idx = np.arange(1, d + 1, dtype=float)
+    lam = idx ** (-a)
+    lam /= lam[0]
+    if case == "aligned":
+        return np.diag(lam)
+    if case == "band":
+        return block_random_rotation(rng, lam, band_kappa)
+    if case == "haar":
+        q = random_orthogonal(rng, d)
+        return q.T @ np.diag(lam) @ q
+    if case == "gaussian_sketch":
+        D = ambient_dim
+        idxD = np.arange(1, D + 1, dtype=float)
+        ambient_lam = idxD ** (-a)
+        ambient_lam /= ambient_lam[0]
+        S = rng.normal(size=(d, D)) / math.sqrt(D)
+        return (S * ambient_lam) @ S.T
+    raise ValueError(f"unknown case: {case}")
+
+
+def make_target_from_source(sigma: np.ndarray, b: float, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    eig, V = np.linalg.eigh(sigma)
+    order = np.argsort(eig)[::-1]
+    eig = eig[order]
+    V = V[:, order]
+    eig = np.maximum(eig, 1e-14)
+    idx = np.arange(1, len(eig) + 1, dtype=float)
+    source = idx ** (-b)
+    signs = rng.choice(np.array([-1.0, 1.0]), size=len(eig))
+    coeff = signs * np.sqrt(source / eig)
+    w_star = V @ coeff
+    return w_star, eig, V
+
+
+def sample_gradient(rng: np.random.Generator, chol: np.ndarray, w: np.ndarray, w_star: np.ndarray, sigma_noise: float, batch_size: int) -> np.ndarray:
+    z0 = rng.normal(size=(batch_size, len(w)))
+    x = z0 @ chol.T
+    noise = rng.normal(scale=sigma_noise, size=batch_size)
+    residual = x @ (w - w_star) - noise
+    return (x.T @ residual) / batch_size
+
+
+def excess_risk(w: np.ndarray, w_star: np.ndarray, sigma: np.ndarray) -> float:
+    e = w - w_star
+    return float(e @ sigma @ e)
+
+
+def q_eff_from_diag_preconditioner(p: np.ndarray, sigma: np.ndarray) -> tuple[float, float, float]:
+    sqrtp = np.sqrt(p)
+    eff = (sqrtp[:, None] * sigma) * sqrtp[None, :]
+    eig_orig = np.linalg.eigvalsh(sigma)[::-1]
+    eig_eff = np.linalg.eigvalsh(eff)[::-1]
+    alpha_orig = -fit_power_slope(eig_orig)
+    alpha_eff = -fit_power_slope(eig_eff)
+    q_eff = 1.0 - alpha_eff / alpha_orig if alpha_orig > 0 else float("nan")
+    return q_eff, alpha_orig, alpha_eff
+
+
+def train_once(
+    optimizer: str,
+    sigma: np.ndarray,
+    w_star: np.ndarray,
+    chol: np.ndarray,
+    lr: float,
+    checkpoints: list[int],
+    args: argparse.Namespace,
+    rng: np.random.Generator,
+) -> list[dict[str, object]]:
+    d = len(w_star)
+    w = np.zeros(d)
+    m = np.zeros(d)
+    v = np.zeros(d)
+    beta1, beta2 = args.beta1, args.beta2
+    diag_sigma = np.diag(sigma).copy()
+    eig, V = np.linalg.eigh(sigma)
+    order = np.argsort(eig)[::-1]
+    eig = np.maximum(eig[order], 1e-14)
+    V = V[:, order]
+
+    if optimizer == "coord_oracle":
+        p_coord = 1.0 / np.sqrt(diag_sigma + args.rho)
+    elif optimizer == "spectral_oracle":
+        p_spectral = V @ np.diag(1.0 / np.sqrt(eig + args.rho)) @ V.T
+
+    rows = []
+    checkpoint_set = set(checkpoints)
+    for step in range(1, max(checkpoints) + 1):
+        g = sample_gradient(rng, chol, w, w_star, args.sigma, args.batch_size)
+        if optimizer == "sgd":
+            w -= lr * g
+        elif optimizer == "coord_oracle":
+            w -= lr * p_coord * g
+        elif optimizer == "spectral_oracle":
+            w -= lr * (p_spectral @ g)
+        elif optimizer == "rmsprop":
+            v = beta2 * v + (1.0 - beta2) * (g * g)
+            w -= lr * g / np.sqrt(v + args.epsilon)
+        elif optimizer == "adam":
+            m = beta1 * m + (1.0 - beta1) * g
+            v = beta2 * v + (1.0 - beta2) * (g * g)
+            mhat = m / (1.0 - beta1**step)
+            vhat = v / (1.0 - beta2**step)
+            w -= lr * mhat / np.sqrt(vhat + args.epsilon)
+        elif optimizer == "adamw":
+            m = beta1 * m + (1.0 - beta1) * g
+            v = beta2 * v + (1.0 - beta2) * (g * g)
+            mhat = m / (1.0 - beta1**step)
+            vhat = v / (1.0 - beta2**step)
+            w *= 1.0 - lr * args.weight_decay
+            w -= lr * mhat / np.sqrt(vhat + args.epsilon)
+        else:
+            raise ValueError(optimizer)
+        if step in checkpoint_set:
+            if optimizer in {"rmsprop", "adam", "adamw"}:
+                vv = v / max(1e-12, 1.0 - beta2**step)
+                p = 1.0 / np.sqrt(vv + args.epsilon)
+                q_eff, alpha_orig, alpha_eff = q_eff_from_diag_preconditioner(p, sigma)
+            elif optimizer == "coord_oracle":
+                q_eff, alpha_orig, alpha_eff = q_eff_from_diag_preconditioner(p_coord, sigma)
+            elif optimizer == "spectral_oracle":
+                alpha_orig = -fit_power_slope(eig)
+                alpha_eff = alpha_orig / 2.0
+                q_eff = 0.5
+            else:
+                alpha_orig = -fit_power_slope(eig)
+                alpha_eff = alpha_orig
+                q_eff = 0.0
+            rows.append({
+                "optimizer": optimizer,
+                "lr": lr,
+                "step": step,
+                "excess_risk": excess_risk(w, w_star, sigma),
+                "q_eff": q_eff,
+                "alpha_orig": alpha_orig,
+                "alpha_eff": alpha_eff,
+            })
+    return rows
+
+
+def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        return
+    keys = list(rows[0].keys())
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=keys)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def summarize(rows: list[dict[str, object]], outdir: Path) -> list[dict[str, object]]:
+    summary = []
+    keys = sorted(set((str(r["case"]), str(r["optimizer"]), float(r["lr"])) for r in rows))
+    for case, opt, lr in keys:
+        subset = [r for r in rows if str(r["case"]) == case and str(r["optimizer"]) == opt and float(r["lr"]) == lr]
+        steps = sorted(set(int(r["step"]) for r in subset))
+        mean_risks = []
+        for step in steps:
+            ss = [r for r in subset if int(r["step"]) == step]
+            risks = np.array([float(r["excess_risk"]) for r in ss])
+            qs = np.array([float(r["q_eff"]) for r in ss])
+            mean_risks.append(float(risks.mean()))
+            summary.append({
+                "case": case,
+                "optimizer": opt,
+                "lr": lr,
+                "step": step,
+                "risk_mean": float(risks.mean()),
+                "risk_std": float(risks.std(ddof=1)) if len(risks) > 1 else 0.0,
+                "q_eff_mean": float(np.nanmean(qs)),
+                "risk_slope_loglog": float("nan"),
+            })
+        slope = fit_slope(np.array(steps), np.array(mean_risks))
+        for r in summary:
+            if r["case"] == case and r["optimizer"] == opt and float(r["lr"]) == lr:
+                r["risk_slope_loglog"] = slope
+    write_csv(outdir / "summary.csv", summary)
+
+    best = []
+    final_step = max(int(r["step"]) for r in summary)
+    for case in sorted(set(str(r["case"]) for r in summary)):
+        for opt in sorted(set(str(r["optimizer"]) for r in summary)):
+            finals = [r for r in summary if r["case"] == case and r["optimizer"] == opt and int(r["step"]) == final_step]
+            if not finals:
+                continue
+            best.append(min(finals, key=lambda r: float(r["risk_mean"])))
+    write_csv(outdir / "best_by_final_risk.csv", best)
+    return summary
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--outdir", type=str, default="experiments/results/random_feature_visibility_training")
+    parser.add_argument("--dimension", type=int, default=256)
+    parser.add_argument("--ambient-dim", type=int, default=2048)
+    parser.add_argument("--a", type=float, default=1.5)
+    parser.add_argument("--b", type=float, default=1.4)
+    parser.add_argument("--cases", type=str, default="aligned,band,haar,gaussian_sketch")
+    parser.add_argument("--optimizers", type=str, default="sgd,rmsprop,adam,adamw,coord_oracle,spectral_oracle")
+    parser.add_argument("--lr-sgd-values", type=str, default="0.03,0.1")
+    parser.add_argument("--lr-adaptive-values", type=str, default="0.001,0.003,0.01")
+    parser.add_argument("--checkpoints", type=str, default="250,500,1000,2000,4000,8000")
+    parser.add_argument("--trials", type=int, default=5)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--sigma", type=float, default=0.1)
+    parser.add_argument("--rho", type=float, default=1e-8)
+    parser.add_argument("--epsilon", type=float, default=1e-8)
+    parser.add_argument("--beta1", type=float, default=0.9)
+    parser.add_argument("--beta2", type=float, default=0.99)
+    parser.add_argument("--weight-decay", type=float, default=1e-3)
+    parser.add_argument("--band-kappa", type=float, default=2.0)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--quick", action="store_true")
+    args = parser.parse_args()
+    if args.quick:
+        args.dimension = 128
+        args.ambient_dim = 1024
+        args.cases = "aligned,haar,gaussian_sketch"
+        args.trials = 2
+        args.checkpoints = "200,400,800"
+        args.lr_sgd_values = "0.1"
+        args.lr_adaptive_values = "0.003,0.01"
+        args.outdir = "experiments/results/random_feature_visibility_training_quick"
+
+    outdir = Path(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    with (outdir / "config.json").open("w") as f:
+        json.dump(vars(args), f, indent=2, sort_keys=True)
+
+    checkpoints = parse_list(args.checkpoints, int)
+    optimizers = parse_list(args.optimizers, str)
+    rows = []
+    base_rng = np.random.default_rng(args.seed)
+    for case in parse_list(args.cases, str):
+        for trial in range(args.trials):
+            rng = np.random.default_rng(int(base_rng.integers(0, 2**31 - 1)))
+            sigma = make_covariance(case, args.dimension, args.ambient_dim, args.a, rng, args.band_kappa)
+            sigma = 0.5 * (sigma + sigma.T) + 1e-10 * np.eye(args.dimension)
+            w_star, _, _ = make_target_from_source(sigma, args.b, rng)
+            chol = np.linalg.cholesky(sigma)
+            for opt in optimizers:
+                lr_values = parse_list(args.lr_sgd_values if opt == "sgd" else args.lr_adaptive_values, float)
+                for lr in lr_values:
+                    rr = train_once(opt, sigma, w_star, chol, lr, checkpoints, args, rng)
+                    for r in rr:
+                        r.update({"case": case, "trial": trial, "a": args.a, "b": args.b, "dimension": args.dimension})
+                    rows.extend(rr)
+                    print(f"case={case} trial={trial} opt={opt} lr={lr:g} final={rr[-1]['excess_risk']:.4g} q={rr[-1]['q_eff']:.3f}")
+    write_csv(outdir / "training_curves.csv", rows)
+    summarize(rows, outdir)
+    print(f"Wrote results to {outdir}")
+
+
+if __name__ == "__main__":
+    main()
