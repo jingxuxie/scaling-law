@@ -1,0 +1,742 @@
+--- /dev/null
++++ b/experiments/stochastic_alignment_scaling.py
+@@ -0,0 +1,383 @@
++"""Stochastic alignment scaling experiment.
++
++This experiment complements ``stochastic_training_scaling.py``.  It trains real
++SGD/RMSProp/Adam/AdamW updates in Gaussian linear regression while varying the
++optimizer-coordinate basis:
++
++  aligned : optimizer coordinates are covariance eigenvectors
++  band    : random rotations inside comparable-eigenvalue bands
++  haar    : global Haar/random orthogonal rotation
++  flat    : Hadamard/flat rotation when dimension is a power of two
++
++The theory predicts that diagonal adaptive methods should have q_eff≈1/2 in
++aligned and band-limited coordinates, but q_eff≈0 in flat/global coordinates.
++The script reports both excess-risk slopes and a direct q_eff diagnostic from the
++effective covariance P^{1/2} Sigma P^{1/2}.
++
++Examples
++--------
++Quick smoke test:
++
++    python experiments/stochastic_alignment_scaling.py --quick
++
++Main local run:
++
++    python experiments/stochastic_alignment_scaling.py \
++        --dimension 512 \
++        --cases aligned,band,flat,haar \
++        --optimizers sgd,coord_oracle,rmsprop,adam,adamw,spectral_oracle \
++        --checkpoints 250,500,1000,2000,4000,8000 \
++        --trials 5 \
++        --batch-size 16 \
++        --outdir experiments/results/stochastic_alignment_main
++"""
++
++from __future__ import annotations
++
++import argparse
++import csv
++import json
++import math
++from pathlib import Path
++
++import numpy as np
++
++try:
++    import matplotlib.pyplot as plt
++except Exception:  # pragma: no cover
++    plt = None
++
++
++def parse_list(text: str, typ=str):
++    return [typ(x.strip()) for x in text.split(",") if x.strip()]
++
++
++def fit_slope(x: np.ndarray, y: np.ndarray, lo: float = 0.25, hi: float = 1.0) -> float:
++    x = np.asarray(x, dtype=float)
++    y = np.asarray(y, dtype=float)
++    mask = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
++    x = x[mask]
++    y = y[mask]
++    if len(x) < 4:
++        return float("nan")
++    a = int(lo * len(x))
++    b = max(a + 3, int(hi * len(x)))
++    b = min(b, len(x))
++    X = np.vstack([np.ones(b - a), np.log(x[a:b])]).T
++    coef, *_ = np.linalg.lstsq(X, np.log(y[a:b]), rcond=None)
++    return float(coef[1])
++
++
++def fit_power_slope(vals: np.ndarray, lo: float = 0.10, hi: float = 0.80) -> float:
++    vals = np.sort(np.asarray(vals, dtype=float))[::-1]
++    vals = vals[np.isfinite(vals) & (vals > 0)]
++    if len(vals) < 20:
++        return float("nan")
++    n = len(vals)
++    a = int(lo * n)
++    b = max(a + 10, int(hi * n))
++    b = min(b, n)
++    ranks = np.arange(1, n + 1, dtype=float)
++    X = np.vstack([np.ones(b - a), np.log(ranks[a:b])]).T
++    coef, *_ = np.linalg.lstsq(X, np.log(vals[a:b]), rcond=None)
++    return float(coef[1])
++
++
++def random_orthogonal(rng: np.random.Generator, d: int) -> np.ndarray:
++    z = rng.normal(size=(d, d))
++    q, r = np.linalg.qr(z)
++    signs = np.sign(np.diag(r))
++    signs[signs == 0] = 1.0
++    return q * signs
++
++
++def hadamard(n: int) -> np.ndarray:
++    if n < 1 or (n & (n - 1)) != 0:
++        raise ValueError("Hadamard case requires dimension to be a power of two")
++    H = np.array([[1.0]])
++    while H.shape[0] < n:
++        H = np.block([[H, H], [H, -H]])
++    return H / math.sqrt(n)
++
++
++def make_bands(lam: np.ndarray, kappa: float) -> list[slice]:
++    bands: list[slice] = []
++    start = 0
++    n = len(lam)
++    while start < n:
++        end = start + 1
++        base = lam[start]
++        while end < n and base / lam[end] <= kappa:
++            end += 1
++        bands.append(slice(start, end))
++        start = end
++    return bands
++
++
++def block_random_rotation(rng: np.random.Generator, lam: np.ndarray, kappa: float) -> np.ndarray:
++    d = len(lam)
++    Q = np.zeros((d, d), dtype=float)
++    for sl in make_bands(lam, kappa):
++        Q[sl, sl] = random_orthogonal(rng, sl.stop - sl.start)
++    return Q
++
++
++def make_case(case: str, d: int, a: float, b: float, sigma_noise: float, rng: np.random.Generator, band_kappa: float):
++    idx = np.arange(1, d + 1, dtype=float)
++    lam = idx ** (-a)
++    lam /= lam[0]
++    source = idx ** (-b)
++    signs = rng.choice(np.array([-1.0, 1.0]), size=d)
++    w_star_eig = signs * np.sqrt(source / lam)
++
++    if case == "aligned":
++        Q = np.eye(d)
++    elif case == "band":
++        Q = block_random_rotation(rng, lam, band_kappa)
++    elif case == "haar":
++        Q = random_orthogonal(rng, d)
++    elif case == "flat":
++        Q = hadamard(d)
++    else:
++        raise ValueError(f"unknown case: {case}")
++
++    # Optimizer-coordinate covariance is Sigma = Q^T diag(lam) Q, and
++    # w*_opt = Q^T w*_eig because z = Q^T x_eig.
++    w_star = Q.T @ w_star_eig
++    sigma_mat = (Q.T * lam) @ Q
++    diag_sigma = np.diag(sigma_mat).copy()
++    return lam, Q, sigma_mat, diag_sigma, w_star, sigma_noise
++
++
++def sample_gradient(rng, w, w_star, lam, Q, sigma_noise, batch_size):
++    d = len(lam)
++    x_eig = rng.normal(size=(batch_size, d)) * np.sqrt(lam)[None, :]
++    z = x_eig @ Q
++    noise = rng.normal(scale=sigma_noise, size=batch_size)
++    residual = z @ (w - w_star) - noise
++    return (z.T @ residual) / batch_size
++
++
++def excess_risk(w: np.ndarray, w_star: np.ndarray, lam: np.ndarray, Q: np.ndarray) -> float:
++    e_opt = w - w_star
++    e_eig = Q @ e_opt
++    return float(np.sum(lam * e_eig * e_eig))
++
++
++def q_eff_from_preconditioner(p: np.ndarray, sigma_mat: np.ndarray, alpha_orig: float) -> float:
++    if not np.all(np.isfinite(p)) or np.min(p) <= 0:
++        return float("nan")
++    sqrtp = np.sqrt(p)
++    eff = (sqrtp[:, None] * sigma_mat) * sqrtp[None, :]
++    eig_eff = np.linalg.eigvalsh(eff)[::-1]
++    alpha_eff = -fit_power_slope(eig_eff)
++    if not np.isfinite(alpha_eff) or alpha_orig <= 0:
++        return float("nan")
++    return float(1.0 - alpha_eff / alpha_orig)
++
++
++def train_one(case: str, optimizer: str, args: argparse.Namespace, trial_seed: int):
++    rng = np.random.default_rng(trial_seed)
++    lam, Q, sigma_mat, diag_sigma, w_star, sigma_noise = make_case(
++        case, args.dimension, args.a, args.b, args.sigma, rng, args.band_kappa
++    )
++    alpha_orig = -fit_power_slope(np.linalg.eigvalsh(sigma_mat)[::-1])
++    d = args.dimension
++    w = np.zeros(d)
++    m = np.zeros(d)
++    v = np.zeros(d)
++    checkpoints = sorted(set(parse_list(args.checkpoints, int)))
++    max_step = max(checkpoints)
++    rows = []
++
++    coord_p = 1.0 / np.sqrt(diag_sigma + args.rho)
++    spectral_p_mat = Q.T @ np.diag(1.0 / np.sqrt(lam + args.rho)) @ Q
++
++    for step in range(1, max_step + 1):
++        g = sample_gradient(rng, w, w_star, lam, Q, sigma_noise, args.batch_size)
++        if optimizer == "sgd":
++            w -= args.lr_sgd * g
++        elif optimizer == "coord_oracle":
++            w -= args.lr_adaptive * coord_p * g
++        elif optimizer == "spectral_oracle":
++            w -= args.lr_adaptive * (spectral_p_mat @ g)
++        elif optimizer == "rmsprop":
++            v = args.beta2 * v + (1.0 - args.beta2) * (g * g)
++            w -= args.lr_adaptive * g / np.sqrt(v + args.epsilon)
++        elif optimizer == "adam":
++            m = args.beta1 * m + (1.0 - args.beta1) * g
++            v = args.beta2 * v + (1.0 - args.beta2) * (g * g)
++            mhat = m / (1.0 - args.beta1**step)
++            vhat = v / (1.0 - args.beta2**step)
++            w -= args.lr_adaptive * mhat / np.sqrt(vhat + args.epsilon)
++        elif optimizer == "adamw":
++            m = args.beta1 * m + (1.0 - args.beta1) * g
++            v = args.beta2 * v + (1.0 - args.beta2) * (g * g)
++            mhat = m / (1.0 - args.beta1**step)
++            vhat = v / (1.0 - args.beta2**step)
++            w *= 1.0 - args.lr_adaptive * args.weight_decay
++            w -= args.lr_adaptive * mhat / np.sqrt(vhat + args.epsilon)
++        else:
++            raise ValueError(f"unknown optimizer: {optimizer}")
++
++        if step in checkpoints:
++            risk = excess_risk(w, w_star, lam, Q)
++            if optimizer == "sgd":
++                q_eff = 0.0
++            elif optimizer == "spectral_oracle":
++                q_eff = 0.5
++            elif optimizer == "coord_oracle":
++                q_eff = q_eff_from_preconditioner(coord_p, sigma_mat, alpha_orig)
++            elif optimizer in {"rmsprop", "adam", "adamw"}:
++                vhat = v / max(1e-12, 1.0 - args.beta2**step)
++                p = 1.0 / np.sqrt(vhat + args.epsilon)
++                q_eff = q_eff_from_preconditioner(p, sigma_mat, alpha_orig)
++            else:
++                q_eff = float("nan")
++            rows.append(
++                {
++                    "case": case,
++                    "optimizer": optimizer,
++                    "step": step,
++                    "excess_risk": risk,
++                    "q_eff": q_eff,
++                    "alpha_orig": alpha_orig,
++                    "diag_condition": float(diag_sigma.max() / diag_sigma.min()),
++                }
++            )
++    return rows
++
++
++def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    if not rows:
++        return
++    keys = list(rows[0].keys())
++    with path.open("w", newline="") as f:
++        writer = csv.DictWriter(f, fieldnames=keys)
++        writer.writeheader()
++        writer.writerows(rows)
++
++
++def summarize(rows: list[dict[str, object]], outdir: Path) -> list[dict[str, object]]:
++    summary = []
++    cases = sorted(set(str(r["case"]) for r in rows))
++    opts = sorted(set(str(r["optimizer"]) for r in rows))
++    for case in cases:
++        for opt in opts:
++            rs = [r for r in rows if r["case"] == case and r["optimizer"] == opt]
++            if not rs:
++                continue
++            steps = sorted(set(int(r["step"]) for r in rs))
++            mean_risks = []
++            for step in steps:
++                vals = np.array([float(r["excess_risk"]) for r in rs if int(r["step"]) == step])
++                qs = np.array([float(r["q_eff"]) for r in rs if int(r["step"]) == step])
++                mean_risks.append(float(vals.mean()))
++                summary.append(
++                    {
++                        "case": case,
++                        "optimizer": opt,
++                        "step": step,
++                        "risk_mean": float(vals.mean()),
++                        "risk_std": float(vals.std(ddof=1)) if len(vals) > 1 else 0.0,
++                        "q_eff_mean": float(np.nanmean(qs)),
++                    }
++                )
++            slope = fit_slope(np.array(steps, dtype=float), np.array(mean_risks))
++            for row in summary:
++                if row["case"] == case and row["optimizer"] == opt:
++                    row["risk_slope_loglog"] = slope
++    write_csv(outdir / "summary.csv", summary)
++    return summary
++
++
++def maybe_plot(summary, outdir: Path, no_plots: bool) -> None:
++    if no_plots or plt is None:
++        return
++    plot_dir = outdir / "plots"
++    plot_dir.mkdir(parents=True, exist_ok=True)
++    cases = sorted(set(str(r["case"]) for r in summary))
++    for case in cases:
++        fig = plt.figure()
++        for opt in sorted(set(str(r["optimizer"]) for r in summary)):
++            rs = [r for r in summary if r["case"] == case and r["optimizer"] == opt]
++            if not rs:
++                continue
++            steps = np.array([float(r["step"]) for r in rs])
++            risk = np.array([float(r["risk_mean"]) for r in rs])
++            plt.loglog(steps, risk, marker="o", label=opt)
++        plt.xlabel("updates")
++        plt.ylabel("mean excess risk")
++        plt.title(case)
++        plt.legend()
++        plt.tight_layout()
++        fig.savefig(plot_dir / f"risk_{case}.png", dpi=160)
++        plt.close(fig)
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--outdir", type=Path, default=Path("experiments/results/stochastic_alignment_main"))
++    parser.add_argument("--dimension", type=int, default=512)
++    parser.add_argument("--a", type=float, default=1.5)
++    parser.add_argument("--b", type=float, default=1.4)
++    parser.add_argument("--sigma", type=float, default=0.1)
++    parser.add_argument("--cases", type=str, default="aligned,band,flat,haar")
++    parser.add_argument("--optimizers", type=str, default="sgd,coord_oracle,rmsprop,adam,adamw,spectral_oracle")
++    parser.add_argument("--checkpoints", type=str, default="250,500,1000,2000,4000,8000")
++    parser.add_argument("--trials", type=int, default=5)
++    parser.add_argument("--batch-size", type=int, default=16)
++    parser.add_argument("--lr-sgd", type=float, default=0.05)
++    parser.add_argument("--lr-adaptive", type=float, default=0.005)
++    parser.add_argument("--rho", type=float, default=1e-8)
++    parser.add_argument("--epsilon", type=float, default=1e-8)
++    parser.add_argument("--beta1", type=float, default=0.9)
++    parser.add_argument("--beta2", type=float, default=0.99)
++    parser.add_argument("--weight-decay", type=float, default=1e-3)
++    parser.add_argument("--band-kappa", type=float, default=2.0)
++    parser.add_argument("--seed", type=int, default=0)
++    parser.add_argument("--quick", action="store_true")
++    parser.add_argument("--no-plots", action="store_true")
++    args = parser.parse_args()
++
++    if args.quick:
++        args.dimension = 256
++        args.cases = "aligned,band,haar"
++        args.optimizers = "sgd,coord_oracle,rmsprop,adam"
++        args.checkpoints = "200,400,800,1600"
++        args.trials = 2
++        args.batch_size = 8
++        args.outdir = Path("experiments/results/stochastic_alignment_quick")
++
++    args.outdir.mkdir(parents=True, exist_ok=True)
++    with (args.outdir / "config.json").open("w") as f:
++        json.dump(vars(args), f, indent=2, sort_keys=True, default=str)
++
++    cases = parse_list(args.cases, str)
++    optimizers = parse_list(args.optimizers, str)
++    base_rng = np.random.default_rng(args.seed)
++    rows: list[dict[str, object]] = []
++    for trial in range(args.trials):
++        for case in cases:
++            for opt in optimizers:
++                seed = int(base_rng.integers(0, 2**31 - 1))
++                out = train_one(case, opt, args, seed)
++                for r in out:
++                    r["trial"] = trial
++                    r["a"] = args.a
++                    r["b"] = args.b
++                    r["dimension"] = args.dimension
++                rows.extend(out)
++                print(f"trial={trial} case={case} opt={opt} final_risk={out[-1]['excess_risk']:.6g} q_eff={out[-1]['q_eff']:.3f}")
++
++    write_csv(args.outdir / "training_curves.csv", rows)
++    summary = summarize(rows, args.outdir)
++    maybe_plot(summary, args.outdir, args.no_plots)
++    print(f"Wrote results to {args.outdir}")
++    print(f"  {args.outdir / 'training_curves.csv'}")
++    print(f"  {args.outdir / 'summary.csv'}")
++
++
++if __name__ == "__main__":
++    main()
+
+--- /dev/null
++++ b/experiments/results/NEXT_EXPERIMENTS.md
+@@ -0,0 +1,61 @@
++# Next experiments after current results
++
++The current results support the deterministic filter theory, the coordinate
++alignment theorem, and the sketch visibility story.  The next experiments should
++focus on actual stochastic training under coordinate changes.
++
++## 1. Stochastic coordinate-alignment training
++
++Run:
++
++```bash
++python experiments/stochastic_alignment_scaling.py \
++  --dimension 512 \
++  --cases aligned,band,flat,haar \
++  --optimizers sgd,coord_oracle,rmsprop,adam,adamw,spectral_oracle \
++  --checkpoints 250,500,1000,2000,4000,8000 \
++  --trials 5 \
++  --batch-size 16 \
++  --outdir experiments/results/stochastic_alignment_main
++```
++
++Expected pattern:
++
++- aligned and band-limited cases: RMSProp/Adam q_eff diagnostic near 1/2;
++- flat and Haar/global cases: coordinatewise RMSProp/Adam q_eff diagnostic near 0;
++- spectral_oracle remains near 1/2 in every basis;
++- SGD remains q_eff=0.
++
++This is the most important next experiment because it checks that the alignment
++mechanism affects real training curves, not only deterministic spectra.
++
++## 2. Learning-rate calibration for stochastic scaling
++
++The current stochastic run shows q_eff≈1/2 for RMSProp/Adam/AdamW and much
++steeper risk decay than SGD.  However, the risk slopes are likely in a transient
++constant-step regime.  To compare to theorem exponents, repeat stochastic runs
++with a grid of learning rates and fit only stable non-saturated windows.
++
++Suggested adaptive learning rates:
++
++```text
++0.001,0.002,0.005,0.01
++```
++
++Suggested SGD learning rates:
++
++```text
++0.02,0.05,0.1
++```
++
++## 3. Structured random features
++
++After stochastic alignment, add feature maps whose coordinate variance profile
++has an intermediate exponent theta.  The prediction from the visible-spectrum
++theorem is
++
++```text
++q_eff ≈ theta / 2.
++```
++
++This is the most direct path to a high-impact result beyond diagonal models.
+
+--- /dev/null
++++ b/notes/15_visible_spectrum_scaling_law.md
+@@ -0,0 +1,286 @@
++# 15. Visible-spectrum scaling law in arbitrary optimizer coordinates
++
++The previous notes identify the mechanism behind optimizer-dependent exponents:
++coordinatewise second moments only help when they are spectrally informative.
++This note packages that mechanism into a general scaling theorem for arbitrary
++optimizer coordinates.
++
++The theorem is deliberately stated with a separate source-condition assumption in
++the transformed basis.  This is necessary: changing coordinates can preserve the
++covariance spectrum while rotating the target.  A covariance-only theorem cannot
++control the bias term unless the target/source condition is also stable.
++
++## 1. Setup
++
++Let
++
++\[
++    z\sim \mathcal N(0,\Sigma),
++    \qquad
++    y=\langle z,w^\star\rangle+\xi,
++    \qquad
++    \mathbb E\xi^2=\sigma^2.
++\]
++
++Let the eigenvalues of \(\Sigma\) satisfy
++
++\[
++    \lambda_i(\Sigma)\asymp i^{-a},
++    \qquad a>1.
++\]
++
++Let \(P\succ0\) be the effective diagonal preconditioner produced by RMSProp,
++Adam, AdamW without the decoupled shrinkage term, or a frozen proxy.  The
++transformed covariance is
++
++\[
++    \widetilde\Sigma=P^{1/2}\Sigma P^{1/2}.
++\]
++
++The core spectral-comparability condition is: for some
++\(\theta\in[0,1]\) and \(\rho>0\),
++
++\[
++\boxed{
++    c(\Sigma^\theta+\rho I)^{-1/2}
++    \preceq
++    P
++    \preceq
++    C(\Sigma^\theta+\rho I)^{-1/2}.
++}
++\]
++
++When \(\theta=1\), coordinatewise adaptivity is fully spectral and we recover the
++aligned/band-limited Adam/RMSProp law.  When \(\theta=0\), the preconditioner is
++scalar at exponent level and we recover SGD-like scaling.
++
++## 2. Effective spectrum
++
++By the spectral-comparability criterion,
++
++\[
++\boxed{
++    \lambda_i(\widetilde\Sigma)
++    \asymp
++    \lambda_i(\Sigma)(\lambda_i(\Sigma)^\theta+\rho)^{-1/2}.
++}
++\]
++
++If \(\lambda_i(\Sigma)\asymp i^{-a}\), then the transformed spectrum has the
++pre-damping exponent
++
++\[
++\boxed{
++    \alpha_{\rm eff}=a(1-\theta/2).
++}
++\]
++
++Equivalently,
++
++\[
++\boxed{
++    q_{\rm eff}=\theta/2.
++}
++\]
++
++The learned-mode count is
++
++\[
++\boxed{
++K_{\rho,\theta}(n)
++\asymp
++\begin{cases}
++    n^{1/[a(1-\theta/2)]},
++    & n\lesssim \rho^{-(1/\theta-1/2)},\\[4pt]
++    \rho^{-1/(2a)}n^{1/a},
++    & n\gtrsim \rho^{-(1/\theta-1/2)},
++\end{cases}
++}
++\]
++
++with the convention that \(\theta=0\) gives \(K(n)\asymp n^{1/a}\).
++
++## 3. Source condition in the transformed problem
++
++Let \((\widetilde\mu_i,\widetilde v_i)\) be the eigenpairs of
++\(\widetilde\Sigma\), and let the transformed parameter be
++\(u=P^{-1/2}w\).  The transformed target is
++
++\[
++    u^\star=P^{-1/2}w^\star.
++\]
++
++Assume the transformed source condition
++
++\[
++\boxed{
++    \widetilde s_i
++    :=
++    \widetilde\mu_i\langle \widetilde v_i,u^\star\rangle^2
++    \asymp i^{-b},
++    \qquad b>1.
++}
++\]
++
++When \(P\) is exactly a spectral function of \(\Sigma\), this source condition is
++identical to the original source condition in the eigenbasis of \(\Sigma\).  In
++noncommuting coordinate systems it is an additional target-alignment assumption,
++and experiments should check its stability.
++
++## Theorem 1: visible-spectrum scaling law
++
++Assume the spectral-comparability condition, the transformed source condition,
++and the standard one-pass SGD stability assumptions for the transformed Gaussian
++problem.  Let
++
++\[
++    n=N_{\rm eff}\gamma,
++    \qquad
++    N_{\rm eff}=N/\log N.
++\]
++
++Then fixed-preconditioner SGD, frozen RMSProp, tracked RMSProp, and Adam up to
++\(\beta_1\)-dependent constants satisfy
++
++\[
++\boxed{
++    \mathbb E R_M(w_N)-\sigma^2
++    \asymp
++    \sum_{i>M}\widetilde s_i
++    +
++    \sum_{i\le M}\frac{\widetilde s_i}{1+n\widetilde\mu_i}
++    +
++    \frac1{N_{\rm eff}}
++    \sum_{i\le M}\min\{1,n^2\widetilde\mu_i^2\}.
++}
++\]
++
++In the clean source range
++
++\[
++    1<b<a(1-\theta/2)+1,
++\]
++
++and when \(\alpha_{\rm eff}=a(1-\theta/2)>1/2\), this simplifies to
++
++\[
++\boxed{
++    
++    \mathbb E R_M(w_N)-\sigma^2
++    \asymp
++    M^{1-b}
++    +K_{\rho,\theta}(n)^{1-b}
++    +\frac{\min\{M,K_{\rho,\theta}(n)\}}{N_{\rm eff}}.
++}
++\]
++### Proof
++
++Apply the change of variables
++
++\[
++    w=P^{1/2}u,
++    \qquad
++    \widetilde z=P^{1/2}z.
++\]
++
++Preconditioned SGD in \(w\) is ordinary SGD in \(u\), with covariance
++\(\widetilde\Sigma=P^{1/2}\Sigma P^{1/2}\).  The spectral-comparability theorem
++gives the effective eigenvalue sequence \(\widetilde\mu_i\).  The transformed
++source condition gives the source energies \(\widetilde s_i\).  The standard
++one-pass Gaussian SGD scaling theorem applied to the transformed problem gives
++the three-filter expression.
++
++The simplified form follows from the two-slope spectral-sum lower and upper
++bounds in `09_matching_filter_lower_bounds.md`, with
++\(\alpha=a(1-\theta/2)\).
++
++## 4. AdamW visible-spectrum law
++
++For AdamW, let \(\delta\) denote the decoupled weight-decay threshold in the same
++units as the effective eigenvalues.  The active horizon becomes
++
++\[
++    T_{\rm eff}=\min\{n,\delta^{-1}\}.
++\]
++
++The learned-mode count is
++
++\[
++\boxed{
++    K_{\rho,\theta,{\rm wd}}(n,\delta)
++    \asymp
++    K_{\rho,\theta}(T_{\rm eff}).
++}
++\]
++
++The full AdamW filters are
++
++\[
++    B_{\rm wd}
++    =
++    \sum_{i\le M}\widetilde s_i
++    \left[
++        \left(\frac{\delta}{\widetilde\mu_i+\delta}\right)^2
++        +
++        \left(\frac{\widetilde\mu_i}{\widetilde\mu_i+\delta}\right)^2
++        \frac1{1+n(\widetilde\mu_i+\delta)}
++    \right],
++\]
++
++and
++
++\[
++    V_{\rm wd}
++    =
++    \frac1{N_{\rm eff}}
++    \sum_{i\le M}
++    \left(\frac{\widetilde\mu_i}{\widetilde\mu_i+\delta}\right)^2
++    \min\{1,n^2(\widetilde\mu_i+\delta)^2\}.
++\]
++
++In the clean count regime, the simplified AdamW law is
++
++\[
++\boxed{
++    R_M-\sigma^2
++    \asymp
++    M^{1-b}
++    +K_{\rho,\theta}(\min\{n,\delta^{-1}\})^{1-b}
++    +\frac{K_{\rho,\theta}(\min\{n,\delta^{-1}\})}{N_{\rm eff}}.
++}
++\]
++
++## 5. Consequences
++
++The theorem gives the paper's general mechanism:
++
++\[
++\boxed{
++\text{visible spectral profile }\theta
++\Rightarrow
++q_{\rm eff}=\theta/2
++\Rightarrow
++K_{\rho,\theta}(n)
++\Rightarrow
++\text{optimizer-dependent scaling law}.
++}
++\]
++
++The diagonal eigenbasis and band-limited cases have \(\theta=1\).  Flat,
++Hadamard, Haar, and isotropic Gaussian sketch coordinates are typically
++\(\theta\approx0\).  Structured random features may yield intermediate
++\(\theta\), which is the most interesting next empirical target.
++
++## 6. What remains
++
++To turn this theorem into the main theorem of a high-impact paper, two pieces
++remain:
++
++1. an empirical estimator of \(\theta\) that is robust when \(P\) and \(\Sigma\)
++   do not commute;
++2. random-feature/sketched-model assumptions that imply spectral comparability
++   or a controlled approximation to it.
++
++The stochastic alignment experiment tests exactly whether the risk curves follow
++this visible-spectrum prediction when coordinates are aligned, band-limited, or
++globally mixed.
+
