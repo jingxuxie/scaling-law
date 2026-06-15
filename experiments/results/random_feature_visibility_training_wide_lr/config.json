@@ -1,0 +1,23 @@
+{
+  "a": 1.5,
+  "ambient_dim": 2048,
+  "b": 1.4,
+  "band_kappa": 2.0,
+  "batch_size": 16,
+  "beta1": 0.9,
+  "beta2": 0.99,
+  "cases": "haar,gaussian_sketch",
+  "checkpoints": "250,500,1000,2000,4000,8000,16000",
+  "dimension": 256,
+  "epsilon": 1e-08,
+  "lr_adaptive_values": "0.0003,0.001,0.003,0.01,0.03,0.1",
+  "lr_sgd_values": "0.03,0.1,0.3",
+  "optimizers": "sgd,rmsprop,adam,adamw,coord_oracle,spectral_oracle",
+  "outdir": "experiments/results/random_feature_visibility_training_wide_lr",
+  "quick": false,
+  "rho": 1e-08,
+  "seed": 0,
+  "sigma": 0.1,
+  "trials": 10,
+  "weight_decay": 0.001
+}
