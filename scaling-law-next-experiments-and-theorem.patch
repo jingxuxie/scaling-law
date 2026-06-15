@@ -1,0 +1,1538 @@
+diff --git a/experiments/analyze_results.py b/experiments/analyze_results.py
+new file mode 100644
+index 0000000..9e669bb
+--- /dev/null
++++ b/experiments/analyze_results.py
+@@ -0,0 +1,135 @@
++"""Analyze sweep outputs for optimizer-dependent scaling-law experiments.
++
++Usage:
++    python experiments/analyze_results.py \
++      --filter-csv experiments/results/filter_main/filter_sweep.csv \
++      --alignment-csv experiments/results/alignment_main/alignment_sweep.csv
++
++The script prints aggregate errors and writes a Markdown report next to the
++input CSVs.  It is intentionally lightweight: only pandas/numpy are required.
++"""
++
++from __future__ import annotations
++
++import argparse
++from pathlib import Path
++
++import numpy as np
++import pandas as pd
++
++
++def summarize_errors(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
++    rows = []
++    for stem in columns:
++        obs = pd.to_numeric(df[f"{stem}_obs"], errors="coerce")
++        pred = pd.to_numeric(df[f"{stem}_pred"], errors="coerce")
++        err = (obs - pred).abs()
++        rows.append(
++            {
++                "metric": stem,
++                "n": int(err.notna().sum()),
++                "mean_abs_error": float(err.mean()),
++                "median_abs_error": float(err.median()),
++                "p90_abs_error": float(err.quantile(0.90)),
++                "max_abs_error": float(err.max()),
++            }
++        )
++    return pd.DataFrame(rows)
++
++
++def flag_filter_rows(df: pd.DataFrame) -> pd.DataFrame:
++    out = df.copy()
++    out["clean_adam_bias_range"] = out["b"] < out["a"] / 2.0 + 1.0
++    out["near_b_equals_1"] = out["b"] <= 1.25
++    # Approximate active Adam count at n_max before damping; useful finite-size flag.
++    out["adam_pre_knee_K_at_nmax"] = out["n_max"] ** (2.0 / out["a"])
++    out["possible_finite_M_saturation"] = out["adam_pre_knee_K_at_nmax"] > 0.25 * out["dimension"]
++    out["comment"] = ""
++    out.loc[~out["clean_adam_bias_range"], "comment"] += "outside clean Adam-bias source range; "
++    out.loc[out["near_b_equals_1"], "comment"] += "slow source tail b close to 1; "
++    out.loc[out["possible_finite_M_saturation"], "comment"] += "possible finite-M saturation; "
++    return out
++
++
++def analyze_filter_csv(path: Path) -> str:
++    df = pd.read_csv(path)
++    count_metrics = ["sgd_count_slope", "adam_count_slope", "adamw_count_slope"]
++    bias_metrics = ["sgd_bias_slope", "adam_bias_slope", "adamw_bias_slope"]
++    count_summary = summarize_errors(df, count_metrics)
++    bias_summary = summarize_errors(df, bias_metrics)
++    flagged = flag_filter_rows(df)
++
++    clean_mid = flagged[(flagged["b"].between(1.3, 1.6)) & (flagged["clean_adam_bias_range"])]
++    clean_summary = summarize_errors(clean_mid, count_metrics + bias_metrics) if len(clean_mid) else pd.DataFrame()
++
++    worst = flagged.assign(adam_bias_err=(flagged["adam_bias_slope_obs"] - flagged["adam_bias_slope_pred"]).abs())
++    worst = worst.sort_values("adam_bias_err", ascending=False).head(10)
++
++    report = []
++    report.append("# Sweep results review\n")
++    report.append(f"Input: `{path}`\n")
++    report.append(f"Rows: {len(df)}\n")
++    report.append("## Count-slope errors\n")
++    report.append(count_summary.to_markdown(index=False))
++    report.append("\n\n## Bias-slope errors\n")
++    report.append(bias_summary.to_markdown(index=False))
++    if len(clean_mid):
++        report.append("\n\n## Clean middle-regime errors\n")
++        report.append(clean_summary.to_markdown(index=False))
++    report.append("\n\n## Largest Adam-bias discrepancies\n")
++    cols = [
++        "a", "b", "rho", "wd", "adam_bias_slope_obs", "adam_bias_slope_pred",
++        "adam_bias_err", "comment",
++    ]
++    report.append(worst[cols].to_markdown(index=False))
++    text = "\n".join(report) + "\n"
++    out_path = path.parent / "filter_sweep_review.md"
++    out_path.write_text(text)
++    return text
++
++
++def analyze_alignment_csv(path: Path) -> str:
++    df = pd.read_csv(path)
++    metrics = ["original_slope", "aligned_slope", "flat_slope", "random_slope"]
++    summary = summarize_errors(df, metrics)
++    df = df.copy()
++    df["random_closer_to_flat_than_aligned"] = (
++        (df["random_slope_obs"] - df["flat_slope_pred"]).abs()
++        < (df["random_slope_obs"] - df["aligned_slope_pred"]).abs()
++    )
++    frac = float(df["random_closer_to_flat_than_aligned"].mean())
++    report = []
++    report.append("# Coordinate-alignment sweep review\n")
++    report.append(f"Input: `{path}`\n")
++    report.append(f"Rows: {len(df)}\n")
++    report.append("## Slope errors\n")
++    report.append(summary.to_markdown(index=False))
++    report.append("\n\n## Random-rotation diagnostic\n")
++    report.append(f"Fraction of random rows closer to flat/SGD slope than aligned slope: `{frac:.3f}`\n")
++    report.append("\n")
++    report.append(df[["dimension", "a", "rho", "random_slope_obs", "flat_slope_pred", "aligned_slope_pred", "random_diag_condition", "random_diag_slope", "random_closer_to_flat_than_aligned"]].to_markdown(index=False))
++    text = "\n".join(report) + "\n"
++    out_path = path.parent / "alignment_sweep_review.md"
++    out_path.write_text(text)
++    return text
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--filter-csv", type=Path, default=Path("experiments/results/filter_main/filter_sweep.csv"))
++    parser.add_argument("--alignment-csv", type=Path, default=Path("experiments/results/alignment_main/alignment_sweep.csv"))
++    args = parser.parse_args()
++
++    if args.filter_csv.exists():
++        print(analyze_filter_csv(args.filter_csv))
++    else:
++        print(f"Missing filter CSV: {args.filter_csv}")
++
++    if args.alignment_csv.exists():
++        print(analyze_alignment_csv(args.alignment_csv))
++    else:
++        print(f"Missing alignment CSV: {args.alignment_csv}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/experiments/sketch_visibility_sweep.py b/experiments/sketch_visibility_sweep.py
+new file mode 100644
+index 0000000..b4e520d
+--- /dev/null
++++ b/experiments/sketch_visibility_sweep.py
+@@ -0,0 +1,309 @@
++"""Sketch / feature visibility experiments for partial Adam/RMSProp exponents.
++
++This script tests the next theory stage: optimizer-dependent exponents are
++controlled by the spectral information visible to coordinatewise second moments.
++
++For each covariance representation Sigma, the script computes:
++  d_j = Sigma_jj                         coordinate variance profile
++  P_j = (d_j + rho)^(-1/2)               RMSProp/Adam diagonal preconditioner
++  Sigma_eff = P^{1/2} Sigma P^{1/2}      transformed covariance
++
++It then fits:
++  alpha_orig    from eigenvalues of Sigma
++  alpha_eff     from eigenvalues of Sigma_eff
++  q_eff_hat     = 1 - alpha_eff / alpha_orig
++  count slopes  K(n)=#{lambda_eff >= 1/n}
++  diag-profile slope and commutator diagnostics
++
++Cases:
++  aligned          : optimizer coordinates are eigenvectors; q_eff ~ 1/2
++  flat             : scalar preconditioner; q_eff ~ 0
++  diagonal_profile : synthetic profile d_i=lambda_i^theta; q_eff ~ theta/2
++  band             : random rotations inside comparable-eigenvalue bands; q_eff ~ 1/2
++  haar             : full random orthogonal mixing; usually q_eff ~ 0
++  gaussian_sketch  : rectangular Gaussian sketch; usually flattens coordinate variances
++
++Examples:
++  python experiments/sketch_visibility_sweep.py --quick
++  python experiments/sketch_visibility_sweep.py --cases aligned,diagonal_profile,band,haar,gaussian_sketch --dimension 1024 --ambient-dim 4096
++"""
++
++from __future__ import annotations
++
++import argparse
++import csv
++import json
++import math
++from pathlib import Path
++
++import numpy as np
++
++try:
++    import matplotlib.pyplot as plt
++except Exception:  # pragma: no cover
++    plt = None
++
++
++def parse_list(text: str, typ=float):
++    return [typ(x.strip()) for x in text.split(",") if x.strip()]
++
++
++def fit_power_slope(values: np.ndarray, lo: float = 0.10, hi: float = 0.80) -> float:
++    vals = np.sort(np.asarray(values, dtype=float))[::-1]
++    vals = vals[np.isfinite(vals) & (vals > 0)]
++    n = len(vals)
++    if n < 20:
++        return float("nan")
++    a = int(lo * n)
++    b = max(a + 10, int(hi * n))
++    b = min(b, n)
++    ranks = np.arange(1, n + 1, dtype=float)
++    X = np.vstack([np.ones(b - a), np.log(ranks[a:b])]).T
++    coef, *_ = np.linalg.lstsq(X, np.log(vals[a:b]), rcond=None)
++    return float(coef[1])
++
++
++def learned_count(mu: np.ndarray, n_values: np.ndarray) -> np.ndarray:
++    mu = np.sort(mu[np.isfinite(mu) & (mu > 0)])[::-1]
++    return np.array([np.searchsorted(-mu, -1.0 / n, side="right") for n in n_values], dtype=float)
++
++
++def fit_count_slope(mu: np.ndarray, n_values: np.ndarray) -> float:
++    k = learned_count(mu, n_values)
++    mask = k > 0
++    if mask.sum() < 5:
++        return float("nan")
++    X = np.vstack([np.ones(mask.sum()), np.log(n_values[mask])]).T
++    coef, *_ = np.linalg.lstsq(X, np.log(k[mask]), rcond=None)
++    return float(coef[1])
++
++
++def random_orthogonal(rng: np.random.Generator, d: int) -> np.ndarray:
++    z = rng.normal(size=(d, d))
++    q, r = np.linalg.qr(z)
++    signs = np.sign(np.diag(r))
++    signs[signs == 0] = 1.0
++    return q * signs
++
++
++def make_bands(lam: np.ndarray, kappa: float) -> list[slice]:
++    bands: list[slice] = []
++    n = len(lam)
++    start = 0
++    while start < n:
++        end = start + 1
++        base = lam[start]
++        while end < n and base / lam[end] <= kappa:
++            end += 1
++        bands.append(slice(start, end))
++        start = end
++    return bands
++
++
++def block_random_rotation(rng: np.random.Generator, lam: np.ndarray, kappa: float) -> np.ndarray:
++    d = len(lam)
++    sigma = np.zeros((d, d), dtype=float)
++    for sl in make_bands(lam, kappa):
++        block_lam = lam[sl]
++        q = random_orthogonal(rng, len(block_lam))
++        sigma[sl, sl] = q.T @ np.diag(block_lam) @ q
++    return sigma
++
++
++def covariance_for_case(
++    case: str,
++    lam: np.ndarray,
++    rng: np.random.Generator,
++    rho: float,
++    theta: float,
++    band_kappa: float,
++    ambient_dim: int,
++) -> tuple[np.ndarray, np.ndarray, str]:
++    """Return Sigma, optional external profile d, and description.
++
++    If external_profile is not None, it is used instead of diag(Sigma) to build P.
++    This supports the synthetic diagonal_profile case d_i=lambda_i^theta.
++    """
++    d = len(lam)
++    if case == "aligned":
++        sigma = np.diag(lam)
++        return sigma, np.diag(sigma).copy(), "eigenbasis coordinates"
++    if case == "flat":
++        sigma = np.diag(lam)
++        profile = np.full(d, float(np.mean(lam)))
++        return sigma, profile, "scalar/flat diagonal profile"
++    if case == "diagonal_profile":
++        sigma = np.diag(lam)
++        profile = lam ** theta
++        return sigma, profile, f"synthetic visible profile theta={theta:g}"
++    if case == "band":
++        sigma = block_random_rotation(rng, lam, band_kappa)
++        return sigma, np.diag(sigma).copy(), f"block rotations, kappa={band_kappa:g}"
++    if case == "haar":
++        q = random_orthogonal(rng, d)
++        sigma = q.T @ np.diag(lam) @ q
++        return sigma, np.diag(sigma).copy(), "full Haar orthogonal rotation"
++    if case == "gaussian_sketch":
++        # Rectangular sketch S: m x D.  Use ambient power-law spectrum, then z=Sx.
++        m = d
++        D = ambient_dim
++        idx = np.arange(1, D + 1, dtype=float)
++        # Infer a from first two lam entries when possible.
++        a_hat = -math.log(lam[1] / lam[0]) / math.log(2.0) if len(lam) > 1 else 1.5
++        ambient_lam = idx ** (-a_hat)
++        ambient_lam /= ambient_lam[0]
++        S = rng.normal(size=(m, D)) / math.sqrt(D)
++        sigma = (S * ambient_lam) @ S.T
++        return sigma, np.diag(sigma).copy(), f"Gaussian sketch m={m}, ambient={D}"
++    raise ValueError(f"unknown case: {case}")
++
++
++def effective_covariance(sigma: np.ndarray, profile: np.ndarray, rho: float) -> tuple[np.ndarray, np.ndarray]:
++    p = 1.0 / np.sqrt(profile + rho)
++    sqrtp = np.sqrt(p)
++    eff = (sqrtp[:, None] * sigma) * sqrtp[None, :]
++    return eff, p
++
++
++def op_norm_symmetric(A: np.ndarray) -> float:
++    return float(np.linalg.norm(A, ord=2))
++
++
++def run_one(
++    case: str,
++    d: int,
++    a: float,
++    rho: float,
++    theta: float,
++    band_kappa: float,
++    ambient_dim: int,
++    n_values: np.ndarray,
++    rng: np.random.Generator,
++) -> dict[str, float | str]:
++    idx = np.arange(1, d + 1, dtype=float)
++    lam = idx ** (-a)
++    lam /= lam[0]
++    sigma, profile, desc = covariance_for_case(case, lam, rng, rho, theta, band_kappa, ambient_dim)
++    eff, p = effective_covariance(sigma, profile, rho)
++
++    eig_orig = np.linalg.eigvalsh(sigma)[::-1]
++    eig_eff = np.linalg.eigvalsh(eff)[::-1]
++
++    alpha_orig = -fit_power_slope(eig_orig)
++    alpha_eff = -fit_power_slope(eig_eff)
++    q_eff = 1.0 - alpha_eff / alpha_orig if alpha_orig > 0 else float("nan")
++    count_orig = fit_count_slope(eig_orig, n_values)
++    count_eff = fit_count_slope(eig_eff, n_values)
++    diag_slope = fit_power_slope(profile)
++    theta_sorted = -diag_slope / alpha_orig if alpha_orig > 0 else float("nan")
++
++    Pmat = np.diag(p)
++    comm = Pmat @ sigma - sigma @ Pmat
++    denom = max(op_norm_symmetric(Pmat @ sigma), 1e-300)
++    comm_ratio = op_norm_symmetric(comm) / denom
++
++    return {
++        "case": case,
++        "description": desc,
++        "dimension": d,
++        "ambient_dim": ambient_dim if case == "gaussian_sketch" else d,
++        "a": a,
++        "rho": rho,
++        "theta_input": theta if case == "diagonal_profile" else float("nan"),
++        "band_kappa": band_kappa if case == "band" else float("nan"),
++        "alpha_orig_hat": alpha_orig,
++        "alpha_eff_hat": alpha_eff,
++        "q_eff_hat": q_eff,
++        "count_orig_slope_hat": count_orig,
++        "count_eff_slope_hat": count_eff,
++        "diag_profile_slope": diag_slope,
++        "theta_sorted_diag_hat": theta_sorted,
++        "diag_condition": float(np.max(profile) / np.min(profile)),
++        "commutator_ratio": comm_ratio,
++        "pred_q_eff_simple": (theta / 2.0 if case == "diagonal_profile" else (0.5 if case in {"aligned", "band"} else 0.0)),
++    }
++
++
++def write_csv(path: Path, rows: list[dict[str, float | str]]) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    keys = list(rows[0].keys())
++    with path.open("w", newline="") as f:
++        writer = csv.DictWriter(f, fieldnames=keys)
++        writer.writeheader()
++        writer.writerows(rows)
++
++
++def maybe_plot(outdir: Path, rows: list[dict[str, float | str]], no_plots: bool) -> None:
++    if no_plots or plt is None:
++        return
++    plot_dir = outdir / "plots"
++    plot_dir.mkdir(parents=True, exist_ok=True)
++    cases = [str(r["case"]) for r in rows]
++    q = np.array([float(r["q_eff_hat"]) for r in rows])
++    pred = np.array([float(r["pred_q_eff_simple"]) for r in rows])
++    x = np.arange(len(rows))
++    fig = plt.figure(figsize=(max(8, len(rows) * 0.5), 4))
++    plt.scatter(x, q, label="observed q_eff")
++    plt.scatter(x, pred, marker="x", label="simple prediction")
++    plt.xticks(x, cases, rotation=60, ha="right")
++    plt.ylabel("q_eff")
++    plt.legend()
++    plt.tight_layout()
++    fig.savefig(plot_dir / "q_eff_by_case.png", dpi=160)
++    plt.close(fig)
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--outdir", type=Path, default=Path("experiments/results/sketch_visibility"))
++    parser.add_argument("--cases", type=str, default="aligned,flat,diagonal_profile,band,haar,gaussian_sketch")
++    parser.add_argument("--dimension", type=int, default=512)
++    parser.add_argument("--ambient-dim", type=int, default=4096)
++    parser.add_argument("--a-values", type=str, default="1.25,1.5,2.0")
++    parser.add_argument("--rho-values", type=str, default="1e-12,1e-8")
++    parser.add_argument("--theta-values", type=str, default="0,0.25,0.5,0.75,1")
++    parser.add_argument("--band-kappa", type=float, default=2.0)
++    parser.add_argument("--n-min", type=float, default=10.0)
++    parser.add_argument("--n-max", type=float, default=10000.0)
++    parser.add_argument("--num-n", type=int, default=40)
++    parser.add_argument("--seed", type=int, default=0)
++    parser.add_argument("--quick", action="store_true")
++    parser.add_argument("--no-plots", action="store_true")
++    args = parser.parse_args()
++
++    if args.quick:
++        args.dimension = min(args.dimension, 256)
++        args.ambient_dim = min(args.ambient_dim, 2048)
++        args.a_values = "1.5"
++        args.rho_values = "1e-8"
++        args.theta_values = "0,0.5,1"
++        args.num_n = 25
++        args.outdir = Path("experiments/results/sketch_visibility_quick")
++
++    rng = np.random.default_rng(args.seed)
++    n_values = np.geomspace(args.n_min, args.n_max, args.num_n)
++    cases = [x.strip() for x in args.cases.split(",") if x.strip()]
++    rows: list[dict[str, float | str]] = []
++    for a in parse_list(args.a_values, float):
++        for rho in parse_list(args.rho_values, float):
++            for case in cases:
++                theta_values = parse_list(args.theta_values, float) if case == "diagonal_profile" else [float("nan")]
++                for theta in theta_values:
++                    row = run_one(case, args.dimension, a, rho, theta, args.band_kappa, args.ambient_dim, n_values, rng)
++                    rows.append(row)
++                    print(
++                        f"case={case:16s} a={a:g} rho={rho:g} theta={theta if np.isfinite(theta) else '-'} "
++                        f"q_eff={row['q_eff_hat']:.3f} pred={row['pred_q_eff_simple']:.3f} "
++                        f"comm={row['commutator_ratio']:.3f}"
++                    )
++
++    args.outdir.mkdir(parents=True, exist_ok=True)
++    write_csv(args.outdir / "sketch_visibility_sweep.csv", rows)
++    with (args.outdir / "config.json").open("w") as f:
++        json.dump(vars(args), f, indent=2, sort_keys=True, default=str)
++    maybe_plot(args.outdir, rows, args.no_plots)
++    print(f"Wrote {len(rows)} rows to {args.outdir / 'sketch_visibility_sweep.csv'}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/experiments/stochastic_training_scaling.py b/experiments/stochastic_training_scaling.py
+new file mode 100644
+index 0000000..25ea2c8
+--- /dev/null
++++ b/experiments/stochastic_training_scaling.py
+@@ -0,0 +1,275 @@
++"""Stochastic training scaling experiments for diagonal Gaussian regression.
++
++This script complements the deterministic filter sweeps by actually training
++SGD / oracle RMSProp / frozen RMSProp / RMSProp / Adam / AdamW on diagonal
++Gaussian linear regression.
++
++The goal is not to replace the deterministic filter theorem; it is to check that
++actual stochastic optimizers move in the predicted direction.  Defaults are
++small enough for a laptop smoke test.  Increase --dimension, --n-values, and
++--reps for paper-quality plots.
++
++Example smoke test:
++  python experiments/stochastic_training_scaling.py --quick
++
++Larger run:
++  python experiments/stochastic_training_scaling.py \
++      --dimension 4096 --a 1.5 --b 1.4 \
++      --n-values 250,500,1000,2000,4000,8000 \
++      --algorithms sgd,oracle_rmsprop,frozen_rmsprop,rmsprop,adam,adamw \
++      --reps 5 --batch-size 16
++"""
++
++from __future__ import annotations
++
++import argparse
++import csv
++import json
++import math
++from pathlib import Path
++
++import numpy as np
++
++try:
++    import matplotlib.pyplot as plt
++except Exception:  # pragma: no cover
++    plt = None
++
++
++def parse_list(text: str, typ=float):
++    return [typ(x.strip()) for x in text.split(",") if x.strip()]
++
++
++def fit_slope(x: np.ndarray, y: np.ndarray) -> float:
++    x = np.asarray(x, dtype=float)
++    y = np.asarray(y, dtype=float)
++    mask = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
++    if mask.sum() < 3:
++        return float("nan")
++    X = np.vstack([np.ones(mask.sum()), np.log(x[mask])]).T
++    coef, *_ = np.linalg.lstsq(X, np.log(y[mask]), rcond=None)
++    return float(coef[1])
++
++
++def make_problem(d: int, a: float, b: float, sigma: float, rng: np.random.Generator):
++    idx = np.arange(1, d + 1, dtype=float)
++    lam = idx ** (-a)
++    lam /= lam[0]
++    source = idx ** (-b)
++    signs = rng.choice([-1.0, 1.0], size=d)
++    w_star = signs * np.sqrt(source / lam)
++    return lam, source, w_star, sigma
++
++
++def exact_excess_risk(w: np.ndarray, w_star: np.ndarray, lam: np.ndarray) -> float:
++    e = w - w_star
++    return float(np.sum(lam * e * e))
++
++
++def sample_batch(rng: np.random.Generator, lam: np.ndarray, w_star: np.ndarray, sigma: float, batch_size: int):
++    X = rng.normal(size=(batch_size, len(lam))) * np.sqrt(lam)[None, :]
++    y = X @ w_star + rng.normal(scale=sigma, size=batch_size)
++    return X, y
++
++
++def gradient_batch(X: np.ndarray, y: np.ndarray, w: np.ndarray) -> np.ndarray:
++    residual = X @ w - y
++    return X.T @ residual / len(y)
++
++
++def estimate_v0(
++    rng: np.random.Generator,
++    lam: np.ndarray,
++    w_star: np.ndarray,
++    sigma: float,
++    batch_size: int,
++    batches: int,
++) -> np.ndarray:
++    v = np.zeros_like(lam)
++    w0 = np.zeros_like(lam)
++    for _ in range(batches):
++        X, y = sample_batch(rng, lam, w_star, sigma, batch_size)
++        g = gradient_batch(X, y, w0)
++        v += g * g
++    return v / max(batches, 1)
++
++
++def train_one(
++    algorithm: str,
++    N: int,
++    lam: np.ndarray,
++    w_star: np.ndarray,
++    sigma: float,
++    lr: float,
++    batch_size: int,
++    rng: np.random.Generator,
++    rho: float,
++    eps: float,
++    beta1: float,
++    beta2: float,
++    weight_decay: float,
++    burnin_batches: int,
++) -> float:
++    d = len(lam)
++    w = np.zeros(d, dtype=float)
++    m = np.zeros(d, dtype=float)
++    v = np.zeros(d, dtype=float)
++
++    if algorithm == "oracle_rmsprop":
++        precond = 1.0 / np.sqrt(lam + rho)
++    elif algorithm == "frozen_rmsprop":
++        vhat = estimate_v0(rng, lam, w_star, sigma, batch_size, burnin_batches)
++        # Normalize out the global residual scale so that eps acts like rho.
++        vhat = vhat / max(np.median(vhat / lam), 1e-300)
++        precond = 1.0 / np.sqrt(vhat + rho)
++    else:
++        precond = None
++
++    steps = math.ceil(N / batch_size)
++    seen = 0
++    for t in range(1, steps + 1):
++        bsz = min(batch_size, N - seen)
++        if bsz <= 0:
++            break
++        seen += bsz
++        X, y = sample_batch(rng, lam, w_star, sigma, bsz)
++        g = gradient_batch(X, y, w)
++
++        if algorithm == "sgd":
++            w -= lr * g
++        elif algorithm in {"oracle_rmsprop", "frozen_rmsprop"}:
++            w -= lr * precond * g
++        elif algorithm == "rmsprop":
++            v = beta2 * v + (1.0 - beta2) * (g * g)
++            w -= lr * g / np.sqrt(v + eps)
++        elif algorithm == "adam":
++            m = beta1 * m + (1.0 - beta1) * g
++            v = beta2 * v + (1.0 - beta2) * (g * g)
++            mhat = m / (1.0 - beta1 ** t)
++            vhat = v / (1.0 - beta2 ** t)
++            w -= lr * mhat / np.sqrt(vhat + eps)
++        elif algorithm == "adamw":
++            m = beta1 * m + (1.0 - beta1) * g
++            v = beta2 * v + (1.0 - beta2) * (g * g)
++            mhat = m / (1.0 - beta1 ** t)
++            vhat = v / (1.0 - beta2 ** t)
++            w *= 1.0 - lr * weight_decay
++            w -= lr * mhat / np.sqrt(vhat + eps)
++        else:
++            raise ValueError(f"unknown algorithm: {algorithm}")
++    return exact_excess_risk(w, w_star, lam)
++
++
++def maybe_plot(outdir: Path, rows: list[dict[str, float | str]], no_plots: bool) -> None:
++    if no_plots or plt is None:
++        return
++    plot_dir = outdir / "plots"
++    plot_dir.mkdir(parents=True, exist_ok=True)
++    algs = sorted(set(str(r["algorithm"]) for r in rows))
++    fig = plt.figure()
++    for alg in algs:
++        sub = [r for r in rows if r["algorithm"] == alg]
++        Ns = np.array([float(r["N"]) for r in sub])
++        risks = np.array([float(r["risk_mean"]) for r in sub])
++        order = np.argsort(Ns)
++        plt.loglog(Ns[order], risks[order], marker="o", label=alg)
++    plt.xlabel("N samples")
++    plt.ylabel("excess risk")
++    plt.legend()
++    plt.tight_layout()
++    fig.savefig(plot_dir / "risk_vs_N.png", dpi=160)
++    plt.close(fig)
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--outdir", type=Path, default=Path("experiments/results/stochastic_training"))
++    parser.add_argument("--dimension", type=int, default=2048)
++    parser.add_argument("--a", type=float, default=1.5)
++    parser.add_argument("--b", type=float, default=1.4)
++    parser.add_argument("--sigma", type=float, default=0.1)
++    parser.add_argument("--n-values", type=str, default="250,500,1000,2000,4000")
++    parser.add_argument("--algorithms", type=str, default="sgd,oracle_rmsprop,frozen_rmsprop,rmsprop,adam,adamw")
++    parser.add_argument("--lr", type=float, default=0.03)
++    parser.add_argument("--batch-size", type=int, default=16)
++    parser.add_argument("--reps", type=int, default=3)
++    parser.add_argument("--rho", type=float, default=1e-8)
++    parser.add_argument("--eps", type=float, default=1e-8)
++    parser.add_argument("--beta1", type=float, default=0.9)
++    parser.add_argument("--beta2", type=float, default=0.99)
++    parser.add_argument("--weight-decay", type=float, default=1e-3)
++    parser.add_argument("--burnin-batches", type=int, default=64)
++    parser.add_argument("--seed", type=int, default=0)
++    parser.add_argument("--quick", action="store_true")
++    parser.add_argument("--no-plots", action="store_true")
++    args = parser.parse_args()
++
++    if args.quick:
++        args.dimension = 512
++        args.n_values = "100,200,400,800"
++        args.algorithms = "sgd,oracle_rmsprop,frozen_rmsprop,adamw"
++        args.reps = 2
++        args.batch_size = 16
++        args.outdir = Path("experiments/results/stochastic_training_quick")
++
++    outdir = args.outdir
++    outdir.mkdir(parents=True, exist_ok=True)
++    rng_master = np.random.default_rng(args.seed)
++    N_values = [int(x) for x in parse_list(args.n_values, int)]
++    algorithms = [x.strip() for x in args.algorithms.split(",") if x.strip()]
++
++    rows = []
++    for alg in algorithms:
++        for N in N_values:
++            risks = []
++            for rep in range(args.reps):
++                rng = np.random.default_rng(int(rng_master.integers(0, 2**32 - 1)))
++                lam, source, w_star, sigma = make_problem(args.dimension, args.a, args.b, args.sigma, rng)
++                risk = train_one(
++                    alg, N, lam, w_star, sigma, args.lr, args.batch_size, rng,
++                    args.rho, args.eps, args.beta1, args.beta2, args.weight_decay,
++                    args.burnin_batches,
++                )
++                risks.append(risk)
++            row = {
++                "algorithm": alg,
++                "N": N,
++                "risk_mean": float(np.mean(risks)),
++                "risk_std": float(np.std(risks, ddof=1)) if len(risks) > 1 else 0.0,
++                "reps": args.reps,
++                "dimension": args.dimension,
++                "a": args.a,
++                "b": args.b,
++                "lr": args.lr,
++                "batch_size": args.batch_size,
++                "rho": args.rho,
++                "eps": args.eps,
++                "weight_decay": args.weight_decay,
++            }
++            rows.append(row)
++            print(f"alg={alg:16s} N={N:6d} risk={row['risk_mean']:.4e} ± {row['risk_std']:.2e}")
++
++    # Add slopes by algorithm.
++    slope_rows = []
++    for alg in algorithms:
++        sub = [r for r in rows if r["algorithm"] == alg]
++        Ns = np.array([float(r["N"]) for r in sub])
++        risks = np.array([float(r["risk_mean"]) for r in sub])
++        slope_rows.append({"algorithm": alg, "risk_slope_vs_N": fit_slope(Ns, risks)})
++
++    with (outdir / "training_risks.csv").open("w", newline="") as f:
++        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
++        writer.writeheader()
++        writer.writerows(rows)
++    with (outdir / "training_slopes.csv").open("w", newline="") as f:
++        writer = csv.DictWriter(f, fieldnames=list(slope_rows[0].keys()))
++        writer.writeheader()
++        writer.writerows(slope_rows)
++    with (outdir / "config.json").open("w") as f:
++        json.dump(vars(args), f, indent=2, sort_keys=True, default=str)
++    maybe_plot(outdir, rows, args.no_plots)
++    print(f"Wrote results to {outdir}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/experiments/results/RESULTS_REVIEW.md b/experiments/results/RESULTS_REVIEW.md
+new file mode 100644
+index 0000000..edfda6f
+--- /dev/null
++++ b/experiments/results/RESULTS_REVIEW.md
+@@ -0,0 +1,69 @@
++# Results review after filter and alignment sweeps
++
++The current experiment outputs support the deterministic filter theory and the
++coordinate-alignment theorem.
++
++## Filter sweep
++
++The `filter_main` sweep used:
++
++- `a_values = 1.25,1.5,2.0`
++- `b_values = 1.2,1.4,1.8`
++- `rho_values = 1e-16,1e-12,1e-8`
++- `wd_values = 0,1e-4,1e-3,1e-2`
++- `dimension = 300000`
++- `n_range = [10, 10000]`
++
++The learned-count slopes are the cleanest validation.  Across representative
++rows, SGD tracks `1/a`, Adam/RMSProp tracks `2/a` before damping, and AdamW
++tracks the effective horizon `min(n, wd^{-1})`.
++
++Representative examples:
++
++- For `a=1.5,b=1.4`, Adam/RMSProp count slope is about `1.334` versus predicted
++  `1.333`.
++- For `a=2.0,b=1.4`, Adam/RMSProp count slope is about `1.004` versus predicted
++  `1.000`.
++- For `a=2.0,b=1.4,wd=1e-3`, AdamW count slope is about `0.845` versus
++  predicted `0.841`.
++
++Bias slopes are strongest in the clean middle regime, for example `b=1.4`.
++Some edge cases show predictable finite-window effects:
++
++- `b=1.2` is close to the slow-tail boundary `b=1`, making bias slopes sensitive
++  to finite cutoffs.
++- For `a=1.5,b=1.8`, the clean Adam-bias range `b<a/2+1=1.75` is violated.
++  The mismatch there is expected.
++
++## Coordinate-alignment sweep
++
++The `alignment_main` sweep strongly supports the alignment theorem.
++
++Representative examples:
++
++- For `a=1.5`, aligned coordinates give slope about `-0.750`, flat coordinates
++  give `-1.500`, and random orthogonal coordinates are around `-1.52`.
++- For `a=2.0`, aligned coordinates give about `-1.000`, flat coordinates give
++  `-2.000`, and random orthogonal coordinates are around `-2.05`.
++
++This confirms that coordinatewise Adam/RMSProp only realizes the `a -> a/2`
++flattening when the optimizer coordinates retain spectral information.
++
++## Next experimental need
++
++The next experiments should focus on sketch/feature visibility and stochastic
++training:
++
++1. Run `experiments/sketch_visibility_sweep.py` to test aligned, flat,
++   band-limited, Haar, and Gaussian-sketch coordinate systems.
++2. Run `experiments/stochastic_training_scaling.py` to check whether actual
++   stochastic optimizer risk follows the deterministic filter predictions.
++
++The key new quantity is the fitted `q_eff_hat` from the effective covariance
++spectrum.  The hypothesis is:
++
++```text
++aligned or band-limited coordinates -> q_eff_hat ≈ 1/2
++flat or isotropic sketch coordinates -> q_eff_hat ≈ 0
++structured partial-visibility coordinates -> q_eff_hat ≈ theta/2
++```
+diff --git a/notes/12_profile_exponent_interpolation.md b/notes/12_profile_exponent_interpolation.md
+new file mode 100644
+index 0000000..951d8a3
+--- /dev/null
++++ b/notes/12_profile_exponent_interpolation.md
+@@ -0,0 +1,265 @@
++# 12. Profile-exponent interpolation: visible spectrum controls q_eff
++
++The coordinate-alignment theorem gives two extremes.  In aligned coordinates,
++RMSProp/Adam sees coordinate second moments proportional to the covariance
++eigenvalues and obtains
++
++\[
++    q_{\rm eff}=1/2.
++\]
++
++In globally mixed or flat coordinates, the coordinate second moments are nearly
++constant and the adaptive preconditioner is scalar at exponent level, so
++
++\[
++    q_{\rm eff}=0.
++\]
++
++This note proves an interpolation theorem.  If the coordinate second-moment
++profile scales like a power of the spectrum,
++
++\[
++    d_i\asymp \lambda_i^\theta,
++    \qquad 0\le \theta\le 1,
++\]
++
++then RMSProp/Adam has
++
++\[
++\boxed{
++    q_{\rm eff}=\theta/2.
++}
++\]
++
++This gives a measurable bridge to experiments: estimate \(\theta\) from the
++coordinate variance profile and predict the optimizer-dependent scaling exponent.
++
++## 1. Visible-profile model
++
++Let
++
++\[
++    \lambda_i\asymp i^{-a},
++    \qquad a>1.
++\]
++
++Assume that, in the optimizer coordinates under consideration, the RMSProp/Adam
++second-moment estimator tracks a coordinate profile
++
++\[
++    v_i\asymp d\,d_i,
++\]
++
++where \(d>0\) is a scalar residual-energy factor and
++
++\[
++\boxed{
++    d_i\asymp \lambda_i^\theta,
++    \qquad 0\le \theta\le1.
++}
++\]
++
++Here \(\theta\) quantifies how much spectral information is visible to the
++coordinatewise second moment.  The cases are:
++
++\[
++    \theta=1: \text{aligned or band-limited spectral coordinates},
++\]
++
++\[
++    \theta=0: \text{flat/global mixing coordinates}.
++\]
++
++After absorbing the scalar \(d^{-1/2}\) into the learning rate, the RMSProp/Adam
++preconditioner is
++
++\[
++    P_i\asymp (d_i+\rho)^{-1/2}
++    \asymp (\lambda_i^\theta+\rho)^{-1/2}.
++\]
++
++## 2. Effective spectrum
++
++The preconditioned covariance eigenvalue scale is
++
++\[
++\boxed{
++    \mu_i^{\rho,\theta}
++    =
++    \lambda_i(\lambda_i^\theta+\rho)^{-1/2}.
++}
++\]
++
++If \(\lambda_i^\theta\gg \rho\), then
++
++\[
++    \mu_i^{\rho,\theta}\asymp \lambda_i^{1-\theta/2}.
++\]
++
++Since \(\lambda_i\asymp i^{-a}\), this gives
++
++\[
++\boxed{
++    \mu_i^{\rho,\theta}\asymp i^{-a(1-\theta/2)}
++    \qquad\text{before the damping knee.}
++}
++\]
++
++Thus the effective spectral exponent is
++
++\[
++\boxed{
++    \alpha_{\rm eff}=a(1-\theta/2).
++}
++\]
++
++Equivalently,
++
++\[
++\boxed{
++    q_{\rm eff}=1-\alpha_{\rm eff}/a=\theta/2.
++}
++\]
++
++## 3. Damping knee and learned-mode count
++
++The damping knee occurs when
++
++\[
++    \lambda_i^\theta\asymp \rho.
++\]
++
++Since \(\lambda_i\asymp i^{-a}\), the spectral knee is
++
++\[
++    i_\rho\asymp \rho^{-1/(a\theta)}
++    \qquad (\theta>0).
++\]
++
++At the knee,
++
++\[
++    \mu_{i_\rho}
++    \asymp
++    \lambda_{i_\rho}\rho^{-1/2}
++    \asymp
++    \rho^{1/\theta-1/2}.
++\]
++
++Therefore the sample-size knee is
++
++\[
++\boxed{
++    n_\rho\asymp \rho^{-(1/\theta-1/2)}.
++}
++\]
++
++The learned-mode count
++
++\[
++    K_{\rho,\theta}(n)=\#\{i:\mu_i^{\rho,\theta}\gtrsim n^{-1}\}
++\]
++
++satisfies
++
++\[
++\boxed{
++K_{\rho,\theta}(n)
++\asymp
++\begin{cases}
++    n^{1/[a(1-\theta/2)]},
++    & n\lesssim \rho^{-(1/\theta-1/2)},\\[4pt]
++    \rho^{-1/(2a)}n^{1/a},
++    & n\gtrsim \rho^{-(1/\theta-1/2)}.
++\end{cases}
++}
++\]
++
++For \(\theta=1\), this recovers the Adam/RMSProp count
++
++\[
++    K_{\rho,1}(n)
++    \asymp
++    \begin{cases}
++        n^{2/a}, & n\lesssim \rho^{-1/2},\\[3pt]
++        \rho^{-1/(2a)}n^{1/a}, & n\gtrsim \rho^{-1/2}.
++    \end{cases}
++\]
++
++For \(\theta=0\), the profile is flat and
++
++\[
++    \mu_i\asymp \lambda_i,
++    \qquad
++    K(n)\asymp n^{1/a},
++\]
++
++up to constants.
++
++## 4. Risk scaling in the clean source range
++
++Assume the source condition
++
++\[
++    s_i=\lambda_i(w_i^\star)^2\asymp i^{-b}.
++\]
++
++In the clean range
++
++\[
++    1<b<a(1-\theta/2)+1,
++\]
++
++the same filter lower-bound calculus gives
++
++\[
++\boxed{
++    R_M-\sigma^2
++    \asymp
++    M^{1-b}
++    +K_{\rho,\theta}(n)^{1-b}
++    +\frac{\min\{M,K_{\rho,\theta}(n)\}}{N_{\rm eff}}.
++}
++\]
++
++Before the damping knee and when variance is lower order, this simplifies to
++
++\[
++    R_M-\sigma^2
++    \asymp
++    M^{1-b}
++    +n^{-(b-1)/[a(1-\theta/2)]}.
++\]
++
++Thus the data-scaling exponent improves continuously as more spectral
++information becomes visible to the coordinatewise second moment.
++
++## 5. Experimental prediction
++
++Given a feature map or sketch with trainable-coordinate covariance \(\Sigma\),
++compute
++
++\[
++    d_j=\Sigma_{jj}.
++\]
++
++If the coordinates have a meaningful spectral order or band order, fit
++
++\[
++    d_j\asymp j^{-a\theta}.
++\]
++
++Then predict
++
++\[
++\boxed{
++    q_{\rm eff}\approx \theta/2,
++    \qquad
++    \alpha_{\rm eff}\approx a(1-\theta/2).
++}
++\]
++
++A profile slope alone is not always sufficient: if the diagonal profile is not
++aligned with eigenspaces, the preconditioner may not commute with the covariance.
++The next note gives a spectral-comparability criterion that separates true
++spectral visibility from accidental sorted-diagonal variation.
+diff --git a/notes/13_gaussian_sketch_alignment.md b/notes/13_gaussian_sketch_alignment.md
+new file mode 100644
+index 0000000..4c9ac8e
+--- /dev/null
++++ b/notes/13_gaussian_sketch_alignment.md
+@@ -0,0 +1,159 @@
++# 13. Gaussian sketches flatten coordinate moments
++
++This note applies the coordinate-alignment theory to Gaussian sketches.  It
++shows that a fully isotropic Gaussian sketch tends to flatten the coordinatewise
++second moments seen by RMSProp/Adam.  Therefore, in such sketch coordinates,
++diagonal adaptivity is often scalar at exponent level rather than an oracle
++spectral preconditioner.
++
++## 1. Sketched covariance
++
++Let the original covariance be
++
++\[
++    H=\operatorname{diag}(\lambda_1,\ldots,\lambda_d),
++\]
++
++and let the trainable features be
++
++\[
++    z=Sx,
++\]
++
++where \(S\in\mathbb R^{m\times d}\).  The covariance in trainable coordinates is
++
++\[
++    \Sigma=SHS^\top.
++\]
++
++RMSProp/Adam tracks coordinate second moments proportional to
++
++\[
++    d_j=\Sigma_{jj}=s_j^\top Hs_j,
++\]
++
++where \(s_j\) is row \(j\) of \(S\).
++
++## 2. Isotropic Gaussian sketch rows
++
++Assume
++
++\[
++    s_j\sim \mathcal N(0,I_d/d)
++\]
++
++independently across rows.  Then
++
++\[
++\boxed{
++    \mathbb E d_j=\frac{\operatorname{tr}(H)}{d}.
++}
++\]
++
++Moreover,
++
++\[
++    d_j=\frac1d\sum_{i=1}^d \lambda_i g_i^2,
++    \qquad g_i\sim\mathcal N(0,1).
++\]
++
++Define the effective rank
++
++\[
++\boxed{
++    r_{\rm eff}(H)
++    =
++    \frac{\operatorname{tr}(H)^2}{\operatorname{tr}(H^2)}.
++}
++\]
++
++Weighted chi-square concentration gives universal constants \(c,C>0\) such that
++for \(t\in(0,1)\),
++
++\[
++\boxed{
++    \mathbb P\left(
++        |d_j-\operatorname{tr}(H)/d|
++        \ge
++        t\operatorname{tr}(H)/d
++    \right)
++    \le
++    2\exp[-ct^2 r_{\rm eff}(H)].
++}
++\]
++
++A union bound gives uniform flattening over all sketch coordinates when
++
++\[
++\boxed{
++    r_{\rm eff}(H)\gtrsim t^{-2}\log(m/\delta).
++}
++\]
++
++Then, with probability at least \(1-\delta\),
++
++\[
++    (1-t)\frac{\operatorname{tr}(H)}d
++    \le
++    d_j
++    \le
++    (1+t)\frac{\operatorname{tr}(H)}d
++    \qquad\text{for all }j\le m.
++\]
++
++## 3. Consequence for Adam/RMSProp
++
++On the flattening event,
++
++\[
++    P_j=(d_j+\rho)^{-1/2}
++\]
++
++is constant up to factors depending only on \(t\).  Thus
++
++\[
++    P\asymp c_\rho I,
++\]
++
++and
++
++\[
++    P^{1/2}\Sigma P^{1/2}\asymp c_\rho\Sigma.
++\]
++
++Therefore the eigenvalue decay exponent of the transformed covariance is the
++same as the eigenvalue decay exponent of \(\Sigma\).  In this regime,
++
++\[
++\boxed{
++    q_{\rm eff}=0
++    \qquad\text{for coordinatewise Adam/RMSProp in sketch coordinates.}
++}
++\]
++
++So a fully isotropic Gaussian sketch can wash out the coordinatewise spectral
++information needed for Adam/RMSProp to realize the aligned-coordinate
++\(q_{\rm eff}=1/2\) scaling.
++
++## 4. Low effective-rank caveat
++
++When \(H\) has very low effective rank, the diagonal entries \(d_j
++=s_j^\top Hs_j\) can fluctuate substantially.  However, these fluctuations are
++random quadratic-form fluctuations, not ordered spectral bands.  A sorted
++profile of \(d_j\) may have a nonzero slope, but the diagonal preconditioner need
++not commute with \(\Sigma\).  The relevant diagnostic is therefore not only the
++slope of sorted \(d_j\), but also whether the diagonal preconditioner is
++spectrally comparable to a function of \(\Sigma\).  The spectral-comparability
++criterion in the next note formalizes this.
++
++## 5. Research implication
++
++For the original Gaussian-sketched linear model, diagonal Adam/RMSProp should not
++be expected to automatically behave like oracle spectral preconditioning.  To
++obtain an optimizer-dependent exponent improvement, the trainable coordinates
++must retain spectral-band information.  This suggests comparing:
++
++1. isotropic Gaussian sketches, predicted to have \(q_{\rm eff}\approx0\);
++2. band-limited or structured sketches, predicted to have \(q_{\rm eff}\approx1/2\);
++3. intermediate sketches, predicted to have \(q_{\rm eff}\in(0,1/2)\) when their
++   preconditioners are spectrally comparable to \((\Sigma^\theta+\rho I)^{-1/2}\).
+diff --git a/notes/14_spectral_comparability_criterion.md b/notes/14_spectral_comparability_criterion.md
+new file mode 100644
+index 0000000..9a1c08d
+--- /dev/null
++++ b/notes/14_spectral_comparability_criterion.md
+@@ -0,0 +1,284 @@
++# 14. Spectral comparability criterion for coordinatewise adaptivity
++
++The previous notes show that diagonal Adam/RMSProp changes scaling exponents only
++when coordinatewise second moments retain spectral information.  This note gives
++a coordinate-free sufficient condition: if the diagonal adaptive preconditioner
++is Loewner-comparable to a spectral function of the covariance, then the
++preconditioned spectrum and scaling law are determined by that function.
++
++This theorem separates true spectral visibility from accidental variation in the
++sorted coordinate variances.
++
++## 1. Setup
++
++Let \(\Sigma\succeq0\) be the covariance in optimizer coordinates, with ordered
++eigenvalues
++
++\[
++    \lambda_1\ge\lambda_2\ge\cdots\ge0.
++\]
++
++Let \(P\succ0\) be the diagonal preconditioner produced by a coordinatewise
++second-moment method, for example
++
++\[
++    P=\operatorname{diag}\left((\Sigma_{jj}+\rho)^{-1/2}\right).
++\]
++
++The transformed covariance is
++
++\[
++    \widetilde\Sigma=P^{1/2}\Sigma P^{1/2}.
++\]
++
++Let \(f:[0,\|\Sigma\|]\to(0,\infty)\) be a nonincreasing spectral profile.  The
++case relevant for partial visibility is
++
++\[
++    f_{\theta,\rho}(t)=(t^\theta+\rho)^{-1/2}.
++\]
++
++## 2. Spectral-comparability assumption
++
++Assume there are constants \(0<c\le C<\infty\) such that
++
++\[
++\boxed{
++    c f(\Sigma)
++    \preceq
++    P
++    \preceq
++    C f(\Sigma).
++}
++\]
++
++This condition says that the coordinatewise preconditioner behaves like a
++spectral function of \(\Sigma\), not merely that its diagonal entries have a
++nontrivial sorted slope.
++
++## Theorem 1: effective eigenvalues under spectral comparability
++
++Under the spectral-comparability assumption, the eigenvalues \(\widetilde\mu_i\)
++of
++
++\[
++    \widetilde\Sigma=P^{1/2}\Sigma P^{1/2}
++\]
++
++satisfy
++
++\[
++\boxed{
++    c\lambda_i f(\lambda_i)
++    \le
++    \widetilde\mu_i
++    \le
++    C\lambda_i f(\lambda_i)
++    \qquad\text{for every }i.
++}
++\]
++
++### Proof
++
++The nonzero eigenvalues of
++
++\[
++    P^{1/2}\Sigma P^{1/2}
++\]
++
++are the same as the nonzero eigenvalues of
++
++\[
++    \Sigma^{1/2}P\Sigma^{1/2}.
++\]
++
++By Loewner comparability,
++
++\[
++    c\Sigma^{1/2}f(\Sigma)\Sigma^{1/2}
++    \preceq
++    \Sigma^{1/2}P\Sigma^{1/2}
++    \preceq
++    C\Sigma^{1/2}f(\Sigma)\Sigma^{1/2}.
++\]
++
++Since \(f(\Sigma)\) commutes with \(\Sigma\),
++
++\[
++    \Sigma^{1/2}f(\Sigma)\Sigma^{1/2}
++    =
++    \Sigma f(\Sigma).
++\]
++
++The eigenvalues of \(\Sigma f(\Sigma)\) are exactly
++
++\[
++    \lambda_i f(\lambda_i).
++\]
++
++The min-max principle then gives the claimed two-sided eigenvalue bound.
++
++## 3. Partial-visibility corollary
++
++Take
++
++\[
++    f_{\theta,\rho}(t)=(t^\theta+ho)^{-1/2},
++    \qquad 0\le\theta\le1.
++\]
++
++If
++
++\[
++    P\asymp f_{\theta,\rho}(\Sigma)
++\]
++
++in Loewner order, then
++
++\[
++\boxed{
++    \widetilde\mu_i
++    \asymp
++    \lambda_i(\lambda_i^\theta+ho)^{-1/2}.
++}
++\]
++
++If
++
++\[
++    \lambda_i\asymp i^{-a},
++\]
++
++then before the damping knee,
++
++\[
++    \widetilde\mu_i\asymp i^{-a(1-\theta/2)}.
++\]
++
++Thus
++
++\[
++\boxed{
++    q_{\rm eff}=\theta/2.
++}
++\]
++
++The corresponding learned-mode count is
++
++\[
++\boxed{
++K_{\rho,\theta}(n)
++\asymp
++\begin{cases}
++    n^{1/[a(1-\theta/2)]},
++    & n\lesssim \rho^{-(1/\theta-1/2)},\\[4pt]
++    \rho^{-1/(2a)}n^{1/a},
++    & n\gtrsim \rho^{-(1/\theta-1/2)}.
++\end{cases}
++}
++\]
++
++with the natural interpretation \(K(n)\asymp n^{1/a}\) when \(\theta=0\).
++
++## 4. Stability under relative perturbations
++
++Suppose instead that
++
++\[
++    P=f(\Sigma)+E
++\]
++
++and
++
++\[
++    \left\|f(\Sigma)^{-1/2}E f(\Sigma)^{-1/2}\right\|_{\rm op}
++    \le \eta<1.
++\]
++
++Then
++
++\[
++    (1-\eta)f(\Sigma)
++    \preceq
++    P
++    \preceq
++    (1+\eta)f(\Sigma).
++\]
++
++Therefore Theorem 1 applies with constants \(1-\eta\) and \(1+\eta\).  In
++particular, small relative perturbations of a spectral preconditioner do not
++change exponents.
++
++## 5. Relation to previous alignment theorems
++
++This theorem subsumes the earlier cases.
++
++### Aligned coordinates
++
++If the optimizer coordinates are eigenvectors, then
++
++\[
++    P=(\Sigma+\rho I)^{-1/2}
++
++\]
++
++and the theorem applies with \(\theta=1\).  Hence \(q_{\rm eff}=1/2\).
++
++### Flat coordinates
++
++If \(P\asymp cI\), then the theorem applies with \(f(t)=c\), i.e. \(\theta=0\).
++The spectrum is unchanged up to constants and \(q_{\rm eff}=0\).
++
++### Band-limited coordinates
++
++If coordinates mix only within comparable-eigenvalue bands, the previous
++band-limited theorem proves
++
++\[
++    P\asymp (\Sigma+\rho I)^{-1/2}
++\]
++
++up to band constants.  Hence \(q_{\rm eff}=1/2\) again.
++
++### Gaussian sketches
++
++For an isotropic Gaussian sketch with sufficiently flat coordinate variances,
++\(P\asymp cI\), so the theorem predicts \(q_{\rm eff}=0\).  If a structured sketch
++produces a preconditioner spectrally comparable to
++\((\Sigma^\theta+ho I)^{-1/2}\), then the theorem predicts
++\(q_{\rm eff}=\theta/2\).
++
++## 6. Experimental diagnostic
++
++For a feature map or sketch, compute:
++
++1. the covariance \(\Sigma\);
++2. the coordinate preconditioner \(P=\operatorname{diag}((\Sigma_{jj}+\rho)^{-1/2})\);
++3. the effective covariance \(P^{1/2}\Sigma P^{1/2}\);
++4. the fitted exponent \(q_{\rm eff}=1-\alpha_{\rm eff}/\alpha_{\rm orig}\);
++5. a commutator diagnostic
++
++\[
++    \frac{\|P\Sigma-\Sigma P\|_{\rm op}}{\|P\Sigma\|_{\rm op}}.
++\]
++
++A small commutator is not sufficient by itself, but it is a useful warning
++signal.  If the commutator is large, sorted diagonal-profile slopes alone should
++not be trusted as spectral visibility estimates.
++
++## 7. Consequence for the paper
++
++The publishable message becomes:
++
++\[
++\boxed{
++\text{Adaptive optimizers change scaling exponents only when their diagonal
++second moments are spectrally comparable to a nontrivial function of the
++covariance.}
++}
++\]
++
++The diagonal eigenbasis theorem is the clean \(\theta=1\) case.  Randomly mixed
++or isotropic sketched coordinates are often \(\theta=0\).  Structured
++random-feature maps may produce intermediate \(\theta\), giving a continuum of
++optimizer-dependent scaling laws.

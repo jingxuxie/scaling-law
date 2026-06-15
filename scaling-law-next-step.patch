@@ -1,0 +1,751 @@
+diff --git a/experiments/analyze_results.py b/experiments/analyze_results.py
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/experiments/analyze_results.py
+@@ -0,0 +1,162 @@
++"""Analyze sweep CSVs for optimizer-dependent scaling-law experiments.
++
++Usage
++-----
++python experiments/analyze_results.py \
++  --filter-csv experiments/results/filter_main/filter_sweep.csv \
++  --alignment-csv experiments/results/alignment_main/alignment_sweep.csv
++
++The script prints aggregate error statistics and flags rows where apparent
++mismatch is expected because the row is outside the clean theorem range or the
++n-range hits finite-dimensional saturation.
++"""
++
++from __future__ import annotations
++
++import argparse
++import csv
++import math
++from pathlib import Path
++from statistics import mean, median
++
++
++def f(x: str) -> float:
++    if x == "inf":
++        return float("inf")
++    return float(x)
++
++
++def read_csv(path: Path) -> list[dict[str, str]]:
++    with path.open(newline="") as fh:
++        return list(csv.DictReader(fh))
++
++
++def summarize_errors(rows: list[dict[str, str]], metric_prefixes: list[str]) -> None:
++    for prefix in metric_prefixes:
++        key = f"{prefix}_abs_error"
++        vals = [f(r[key]) for r in rows if key in r and math.isfinite(f(r[key]))]
++        if not vals:
++            continue
++        print(
++            f"{prefix:28s} mean={mean(vals):.4f} median={median(vals):.4f} "
++            f"max={max(vals):.4f} n={len(vals)}"
++        )
++
++
++def adam_theory_count(n: float, a: float, rho: float) -> float:
++    if rho <= 0:
++        return n ** (2.0 / a)
++    knee = rho ** (-0.5)
++    if n <= knee:
++        return n ** (2.0 / a)
++    return rho ** (-1.0 / (2.0 * a)) * n ** (1.0 / a)
++
++
++def analyze_filter(path: Path) -> None:
++    rows = read_csv(path)
++    print("\n== Filter sweep ==")
++    print(f"path={path}")
++    print(f"rows={len(rows)}")
++    summarize_errors(
++        rows,
++        [
++            "sgd_count_slope",
++            "adam_count_slope",
++            "adamw_count_slope",
++            "sgd_bias_slope",
++            "adam_bias_slope",
++            "adamw_bias_slope",
++        ],
++    )
++
++    print("\nRows with large Adam bias error and likely reason:")
++    flagged = []
++    for r in rows:
++        a = f(r["a"])
++        b = f(r["b"])
++        rho = f(r["rho"])
++        dim = f(r["dimension"])
++        nmax = f(r["n_max"])
++        err = f(r["adam_bias_slope_abs_error"])
++        alpha = a / 2.0
++        kmax = adam_theory_count(nmax, a, rho)
++        reasons = []
++        if b >= alpha + 1.0:
++            reasons.append("outside clean Adam-bias theorem: b >= a/2 + 1")
++        if b <= 1.25:
++            reasons.append("slow source-tail convergence: b close to 1")
++        if kmax > 0.25 * dim:
++            reasons.append("finite-dimensional saturation: K(n_max) not << dimension")
++        if err > 0.10:
++            flagged.append((err, r, reasons))
++    flagged.sort(reverse=True, key=lambda x: x[0])
++    for err, r, reasons in flagged[:12]:
++        print(
++            f"err={err:.3f} a={r['a']} b={r['b']} rho={r['rho']} wd={r['wd']} "
++            f"obs={f(r['adam_bias_slope_obs']):.3f} pred={f(r['adam_bias_slope_pred']):.3f} "
++            f"reason={'; '.join(reasons) or 'needs inspection'}"
++        )
++
++    clean = []
++    for r in rows:
++        a = f(r["a"])
++        b = f(r["b"])
++        rho = f(r["rho"])
++        dim = f(r["dimension"])
++        nmax = f(r["n_max"])
++        alpha = a / 2.0
++        kmax = adam_theory_count(nmax, a, rho)
++        if (1.25 < b < alpha + 1.0) and (kmax < 0.25 * dim):
++            clean.append(r)
++    if clean:
++        vals = [f(r["adam_bias_slope_abs_error"]) for r in clean]
++        print(
++            "\nClean Adam-bias subset "
++            f"(1.25<b<a/2+1 and K(n_max)<0.25M): n={len(clean)} "
++            f"mean_err={mean(vals):.4f} median_err={median(vals):.4f} max_err={max(vals):.4f}"
++        )
++    else:
++        print("\nNo rows met the strict clean Adam-bias subset criterion.")
++
++
++def analyze_alignment(path: Path) -> None:
++    rows = read_csv(path)
++    print("\n== Alignment sweep ==")
++    print(f"path={path}")
++    print(f"rows={len(rows)}")
++    for prefix in ["original", "aligned", "flat", "random"]:
++        obs_key = f"{prefix}_slope_obs"
++        pred_key = f"{prefix}_slope_pred"
++        vals = [abs(f(r[obs_key]) - f(r[pred_key])) for r in rows if obs_key in r]
++        if vals:
++            print(
++                f"{prefix:10s} slope_abs_error mean={mean(vals):.4f} "
++                f"median={median(vals):.4f} max={max(vals):.4f}"
++            )
++    print("\nRandom-rotation diagnostics:")
++    for r in rows:
++        if "random_diag_condition" in r:
++            print(
++                f"d={r['dimension']} a={r['a']} rho={r['rho']} "
++                f"random_slope={f(r['random_slope_obs']):.3f} pred={f(r['random_slope_pred']):.3f} "
++                f"diag_cond={f(r['random_diag_condition']):.2f} diag_slope={f(r['random_diag_slope']):.3f}"
++            )
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--filter-csv", type=Path, default=Path("experiments/results/filter_main/filter_sweep.csv"))
++    parser.add_argument("--alignment-csv", type=Path, default=Path("experiments/results/alignment_main/alignment_sweep.csv"))
++    args = parser.parse_args()
++    if args.filter_csv.exists():
++        analyze_filter(args.filter_csv)
++    else:
++        print(f"missing filter CSV: {args.filter_csv}")
++    if args.alignment_csv.exists():
++        analyze_alignment(args.alignment_csv)
++    else:
++        print(f"missing alignment CSV: {args.alignment_csv}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/experiments/results/RESULTS_REVIEW.md b/experiments/results/RESULTS_REVIEW.md
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/experiments/results/RESULTS_REVIEW.md
+@@ -0,0 +1,35 @@
++# Results review: filter and alignment sweeps
++
++The first experiment batch is encouraging.
++
++## What passes clearly
++
++The learned-mode count predictions are very strong.  Representative rows show:
++
++- for `a=1.5`, Adam/RMSProp count slope is about `1.334` versus predicted `1.333`;
++- for `a=2.0`, Adam/RMSProp count slope is about `1.004` or `0.999` versus predicted `1.0`;
++- AdamW count slopes track the effective-horizon prediction after replacing `n` by `min(n, lambda_wd^{-1})`.
++
++The coordinate-alignment experiment is especially clean.  Aligned coordinates give slope `-a/2`, flat coordinates give `-a`, and random rotations are close to the flat/SGD-like slope.
++
++## What needs care
++
++Some Adam/RMSProp bias slopes are worse than count slopes.  This is expected in three regimes:
++
++1. `b` near 1: source tails converge slowly, so finite-dimensional spectral sums have large corrections.
++2. `b >= a/2 + 1`: this is outside the clean bias theorem for the Adam/RMSProp head exponent `alpha=a/2`.
++3. `K(n_max)` close to or larger than the truncation dimension: the fitted range includes finite-model saturation.
++
++The next analysis should use active-window fits that exclude rows outside the theorem range and exclude points for which `K(n)` is too close to the ambient dimension.
++
++## Next empirical step
++
++Run:
++
++```bash
++python experiments/analyze_results.py \
++  --filter-csv experiments/results/filter_main/filter_sweep.csv \
++  --alignment-csv experiments/results/alignment_main/alignment_sweep.csv
++```
++
++Then run a larger/saner bias-focused sweep with smaller `n_max` for small `a` and low `b`, or larger dimension when testing aggressive Adam preconditioning.
+diff --git a/experiments/results/analysis_after_sweeps.md b/experiments/results/analysis_after_sweeps.md
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/experiments/results/analysis_after_sweeps.md
+@@ -0,0 +1,99 @@
++# Analysis of `experiments/results` after first local sweeps
++
++## Files reviewed
++
++- `experiments/results/filter_main/config.json`
++- `experiments/results/filter_main/filter_sweep.csv`
++- `experiments/results/filter_main/summary.json`
++- `experiments/results/alignment_main/config.json`
++- `experiments/results/alignment_main/alignment_sweep.csv`
++- `experiments/results/alignment_main/summary.json`
++
++## Main takeaways
++
++The deterministic learned-mode count experiments pass strongly.
++
++For the filter sweep, the main grid used
++
++```text
++a in {1.25, 1.5, 2.0}
++b in {1.2, 1.4, 1.8}
++rho in {1e-16, 1e-12, 1e-8}
++weight_decay in {0, 1e-4, 1e-3, 1e-2}
++M = 300000
++n in [10, 10000]
++```
++
++The count exponents match the predictions across the grid:
++
++- SGD: `K(n) ~ n^{1/a}`.
++- Adam/RMSProp: `K(n) ~ n^{2/a}` before the damping knee.
++- AdamW: `K(n) ~ K_{rho,1/2}(min(n, lambda_wd^{-1}))`, so count growth saturates after the weight-decay horizon.
++
++Representative rows:
++
++```text
++a=1.25: SGD count 0.807 vs 0.800, Adam count 1.586 vs 1.600.
++a=1.50: SGD count 0.681 vs 0.667, Adam count 1.334 vs 1.333.
++a=2.00: SGD count 0.520 vs 0.500, Adam count 1.004 vs 1.000.
++```
++
++AdamW count slopes also match the theory very closely when the predicted slope accounts for the weight-decay horizon.  For example, at `a=2.0`, `wd=1e-3`, the AdamW count slope is around `0.845` vs predicted `0.841`, and at `wd=1e-2` it is around `0.194` vs predicted `0.192`.
++
++## Bias slope interpretation
++
++Bias slopes match well in the clean source range and when finite-M saturation is not too strong.  Some rows show larger discrepancy, especially when:
++
++1. the source exponent is outside or near the clean range `1 < b < alpha + 1`, where `alpha = a/2` for Adam/RMSProp;
++2. `K_{rho,1/2}(n_max)` approaches or exceeds the finite dimension `M=300000`, so the finite-dimensional saturated filter is no longer well represented by the simple infinite-dimensional slope;
++3. AdamW has a nonzero shrinkage floor, so a single global log-log slope over a range crossing the weight-decay horizon can mix several regimes.
++
++Examples:
++
++- For `a=1.25`, `alpha=0.625`, so `alpha+1=1.625`.  The rows with `b=1.8` are outside the clean source range, and the Adam bias slope is accordingly not expected to match the simple `-2(b-1)/a` prediction.
++- For `a=1.25`, the Adam learned-count exponent is large, `2/a=1.6`; at large `n`, the implied learned count can be comparable to or larger than `M`, causing finite-dimensional effects.
++- For `a=2.0`, `b=1.4`, the Adam bias slopes are close: roughly `-0.414` vs predicted `-0.400`.
++
++Conclusion: the count law is robustly validated; bias-slope experiments should be refined with validity windows that avoid saturated finite-M and transition regimes.
++
++## Coordinate-alignment sweep
++
++The coordinate-alignment sweep used
++
++```text
++alignment_dimensions in {256, 512, 1024}
++a in {1.25, 1.5, 2.0}
++rho in {1e-12, 1e-8}
++include_random = true
++```
++
++It strongly supports the coordinate-alignment theorem:
++
++- aligned coordinates give effective slope `-a/2`;
++- flat/Hadamard coordinates give slope `-a`;
++- random orthogonal coordinates are close to `-a`, not `-a/2`.
++
++Representative rows:
++
++```text
++d=512, a=1.25: aligned -0.625 vs -0.625, flat -1.25 vs -1.25, random -1.265 vs -1.25.
++d=512, a=1.5: aligned -0.750 vs -0.750, flat -1.50 vs -1.50, random -1.526 vs -1.50.
++d=512, a=2.0: aligned -1.000 vs -1.000, flat -2.00 vs -2.00, random -2.059 vs -2.00.
++```
++
++This is an important result: diagonal Adam/RMSProp does not automatically improve exponents under arbitrary rotations.  It improves exponents when the optimizer coordinates expose spectral structure to the coordinatewise second moments.
++
++## Next experimental improvements
++
++1. Add a validity-aware slope fitter that separately fits:
++   - active pre-damping regime;
++   - damping-limited regime;
++   - AdamW pre-ceiling regime;
++   - AdamW post-ceiling regime;
++   - non-saturated finite-M regime.
++
++2. Add stochastic-training versions of the deterministic filter experiments.
++
++3. Add partial-alignment experiments with block rotations of increasing band width, because the next theorem predicts that rotations within comparable-eigenvalue bands preserve `q_eff=1/2`, while broad cross-band rotations reduce the effective exponent.
++
++4. Add an experiment that estimates an empirical diagonal-profile exponent `theta` from coordinate variances and tests the interpolated prediction `q_eff = theta/2` when off-band leakage is controlled.
+diff --git a/notes/12_profile_exponent_interpolation.md b/notes/12_profile_exponent_interpolation.md
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/notes/12_profile_exponent_interpolation.md
+@@ -0,0 +1,260 @@
++# 12. Diagonal-profile exponent interpolation theorem
++
++The alignment notes prove two extremes and one robust intermediate case:
++
++- aligned coordinates give `q_eff = 1/2`;
++- flat/global mixing gives `q_eff = 0` at exponent level;
++- arbitrary rotations within comparable-eigenvalue bands preserve `q_eff = 1/2`.
++
++This note proves a quantitative interpolation theorem.  The effective exponent is controlled by how strongly the coordinate variance profile tracks spectral scale.
++
++## 1. Band profile model
++
++Let
++
++\[
++    H=\operatorname{diag}(\lambda_1,\ldots,\lambda_M),
++    \qquad
++    \lambda_i\asymp i^{-a},
++    \qquad a>1.
++\]
++
++Let the optimizer-coordinate covariance be
++
++\[
++    \Sigma=Q^\top H Q.
++\]
++
++Partition coordinates into spectral bands \(B_\ell\).  Inside band \(B_\ell\), assume the population eigenvalues have scale \(\Lambda_\ell\):
++
++\[
++    \lambda_i\asymp_\kappa \Lambda_\ell,
++    \qquad i\in B_\ell.
++\]
++
++Assume also that optimizer-coordinate variances inside the same band have scale \(\Delta_\ell\):
++
++\[
++    \Sigma_{jj}\asymp_\kappa \Delta_\ell,
++    \qquad j\in B_\ell.
++\]
++
++The interpolation assumption is that coordinate variances track spectral scales by a power law:
++
++\[
++\boxed{
++    \Delta_\ell\asymp \Lambda_\ell^\theta,
++    \qquad 0\le \theta\le 1.
++}
++\]
++
++The aligned/band-limited case has \(\theta=1\).  The flat-coordinate case has \(\theta=0\).
++
++## 2. RMSProp/Adam preconditioner under a diagonal profile
++
++By the coordinate-second-moment identity,
++
++\[
++    v_j\asymp d\,\Sigma_{jj},
++\]
++
++where \(d\) is a scalar residual-energy EMA.  Ignoring the scalar, the diagonal preconditioner is
++
++\[
++    D_\rho=\operatorname{diag}\left((\Sigma_{jj}+\rho)^{-1/2}\right).
++\]
++
++The transformed covariance is
++
++\[
++    \widetilde\Sigma=D_\rho^{1/2}\Sigma D_\rho^{1/2}.
++\]
++
++Within band \(B_\ell\), the diagonal entries of \(D_\rho\) are comparable to
++
++\[
++    (\Delta_\ell+\rho)^{-1/2}.
++\]
++
++Therefore the same Loewner/min-max argument as in the band-limited theorem gives, for every effective eigenvalue in band \(B_\ell\),
++
++\[
++\boxed{
++    \widetilde\mu_i
++    \asymp_\kappa
++    \lambda_i(\Delta_\ell+\rho)^{-1/2}.
++}
++\]
++
++Using \(\Delta_\ell\asymp \Lambda_\ell^\theta\) and \(\lambda_i\asymp \Lambda_\ell\), this becomes
++
++\[
++\boxed{
++    \widetilde\mu_i
++    \asymp_\kappa
++    \lambda_i(\lambda_i^\theta+\rho)^{-1/2}.
++}
++\]
++
++This is the profile-interpolated effective spectrum.
++
++## 3. Effective exponent before the damping knee
++
++When
++
++\[
++    \lambda_i^\theta\gg \rho,
++\]
++
++the effective eigenvalues satisfy
++
++\[
++    \widetilde\mu_i
++    \asymp
++    \lambda_i^{1-\theta/2}.
++\]
++
++Since \(\lambda_i\asymp i^{-a}\), this means
++
++\[
++    \widetilde\mu_i\asymp i^{-a(1-\theta/2)}.
++\]
++
++Thus the effective spectral exponent is
++
++\[
++\boxed{
++    \alpha_{\rm eff}=a(1-\theta/2).
++}
++\]
++
++Equivalently, the optimizer behaves like spectral preconditioning with
++
++\[
++\boxed{
++    q_{\rm eff}=\theta/2.
++}
++\]
++
++This interpolates between
++
++\[
++    \theta=0 \Rightarrow q_{\rm eff}=0,
++    \qquad
++    \theta=1 \Rightarrow q_{\rm eff}=1/2.
++\]
++
++## 4. Learned-mode count with damping
++
++For \(\theta>0\), the damping knee is determined by
++
++\[
++    \lambda_i^\theta\asymp \rho.
++\]
++
++Since \(\lambda_i\asymp i^{-a}\), the index knee is
++
++\[
++\boxed{
++    i_\rho\asymp \rho^{-1/(a\theta)}.
++}
++\]
++
++At the knee,
++
++\[
++    \widetilde\mu_{i_\rho}\asymp \rho^{1/\theta-1/2}.
++\]
++
++Therefore the sample-size knee is
++
++\[
++\boxed{
++    n_\rho\asymp \rho^{-(1/\theta-1/2)}.
++}
++\]
++
++The learned-mode count is
++
++\[
++    K_{\rho,\theta}(n)=\#\{i:\widetilde\mu_i\gtrsim n^{-1}\}.
++\]
++
++Hence
++
++\[
++\boxed{
++K_{\rho,\theta}(n)
++\asymp
++\begin{cases}
++    n^{1/[a(1-\theta/2)]},
++    & n\lesssim \rho^{-(1/\theta-1/2)},\\[4pt]
++    \rho^{-1/(2a)}n^{1/a},
++    & n\gtrsim \rho^{-(1/\theta-1/2)}.
++\end{cases}
++}
++\]
++
++For \(\theta=1\), this recovers the Adam/RMSProp formula.  For \(\theta=0\), the coordinate variances are flat, the preconditioner is scalar, and \(K_{\rho,0}(n)\asymp n^{1/a}\) up to constants.
++
++## 5. Source-condition scaling law
++
++Assume
++
++\[
++    s_i=\lambda_i(w_i^\star)^2\asymp i^{-b}.
++\]
++
++In the clean source range
++
++\[
++    1<b<a(1-\theta/2)+1,
++\]
++
++the sharp filter law gives
++
++\[
++\boxed{
++    R_M-\sigma^2
++    \asymp
++    M^{1-b}
++    +K_{\rho,\theta}(n)^{1-b}
++    +\frac{K_{\rho,\theta}(n)}{N_{\rm eff}}.
++}
++\]
++
++Before the damping knee, the bias exponent in \(n\) is
++
++\[
++\boxed{
++    -\frac{b-1}{a(1-\theta/2)}.
++}
++\]
++
++and the learned-count exponent is
++
++\[
++\boxed{
++    \frac{1}{a(1-\theta/2)}.
++}
++\]
++
++Thus measuring the coordinate-variance profile exponent \(\theta\) gives a direct prediction for the optimizer-dependent scaling exponent.
++
++## 6. Empirical use
++
++Given an optimizer coordinate covariance \(\Sigma\), compute
++
++\[
++    d_j=\Sigma_{jj}.
++\]
++
++Sort or band-average \((d_j)\), fit a slope against the corresponding spectral band scales, and estimate \(\theta\).  The prediction is
++
++\[
++\boxed{
++    q_{\rm eff}\approx \theta/2.
++}
++\]
++
++This gives a bridge between the diagonal/aligned theorem and random-feature models, where coordinates may partially but not perfectly reveal spectral scale.
+diff --git a/notes/13_gaussian_sketch_alignment.md b/notes/13_gaussian_sketch_alignment.md
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/notes/13_gaussian_sketch_alignment.md
+@@ -0,0 +1,165 @@
++# 12. Gaussian sketches flatten coordinate second moments
++
++The coordinate-alignment theorem shows that diagonal RMSProp/Adam acts spectrally only when coordinatewise gradient second moments retain spectral information.  This note applies that principle to Gaussian sketches.
++
++## Setup
++
++Let
++
++\[
++H=\operatorname{diag}(\lambda_1,\ldots,\lambda_d)
++\]
++
++and let the trainable features be sketched coordinates
++
++\[
++z=Sx,
++\qquad
++\Sigma=SHS^\top,
++\]
++
++where the rows \(s_j^\top\) of \(S\in\mathbb R^{M\times d}\) are independent isotropic sketch vectors.  For simplicity take
++
++\[
++s_j\sim \mathcal N(0,I_d/d).
++\]
++
++The coordinate variance seen by RMSProp/Adam is
++
++\[
++d_j=\Sigma_{jj}=s_j^\top Hs_j.
++\]
++
++By the arbitrary-coordinate second-moment lemma,
++
++\[
++\mathbb E[g_j^2\mid e]
++=
++c_e d_j+2(\Sigma e)_j^2,
++\]
++
++so the adaptive diagonal preconditioner is controlled by \(d_j\), not by the ordered eigenvalues \(\lambda_i\).
++
++## Theorem 1: Gaussian sketch diagonals concentrate around trace scale
++
++Let
++
++\[
++\bar d=\mathbb E d_j=\frac{\operatorname{tr}(H)}{d}.
++\]
++
++Define the effective rank
++
++\[
++r_{\rm eff}=\frac{\operatorname{tr}(H)^2}{\operatorname{tr}(H^2)}.
++\]
++
++There are universal constants \(c,C>0\) such that for every \(t>0\),
++
++\[
++\boxed{
++\Pr\left(|d_j-ar d|>t\bar d\right)
++\le
++2\exp\left[-c r_{\rm eff}\min\{t^2,t\}\right].
++}
++\]
++
++Consequently, if
++
++\[
++r_{\rm eff}\gtrsim \log(M/\delta),
++\]
++
++then with probability at least \(1-\delta\), simultaneously for all sketch coordinates,
++
++\[
++\boxed{
++(1/2)\bar d\le d_j\le (3/2)\bar d.
++}
++\]
++
++Thus the diagonal RMSProp/Adam preconditioner is scalar up to constants:
++
++\[
++(d_j+
++ho)^{-1/2}
++\asymp
++(ar d+
++ho)^{-1/2}.
++\]
++
++Therefore
++
++\[
++D_\rho^{1/2}\Sigma D_\rho^{1/2}
++\asymp
++(ar d+
++ho)^{-1/2}
++
++times \Sigma,
++\]
++
++and diagonal adaptivity does not change the eigenvalue power-law exponent.
++
++### Proof
++
++The random variable \(d_j=s_j^\top Hs_j\) is a weighted chi-square sum.  Hanson-Wright or the standard Laurent-Massart quadratic-form bound gives
++
++\[
++\Pr(|d_j-ar d|>tar d)
++\le
++2\exp[-c\min\{t^2\operatorname{tr}(H)^2/\operatorname{tr}(H^2),
++ t\operatorname{tr}(H)/\|H\|_{\rm op}\}].
++\]
++
++Since \(\|H\|_{\rm op}\le \sqrt{\operatorname{tr}(H^2)}\), the first displayed bound follows up to constants.  A union bound over \(M\) coordinates gives the simultaneous statement.
++
++## Theorem 2: damped scalarization under bounded diagonal spread
++
++Even when \(r_{\rm eff}
++ot\gg
++gg \log M\), suppose the realized sketch diagonals satisfy
++
++\[
++0<d_-\le d_j\le d_+<\infty.
++\]
++
++With damping \(\rho>0\), the transformed covariance obeys
++
++\[
++\boxed{
++(d_++\rho)^{-1/2}\Sigma
++\preceq
++D_\rho^{1/2}\Sigma D_\rho^{1/2}
++\preceq
++(d_-+
++ho)^{-1/2}\Sigma.
++}
++\]
++
++Thus all transformed eigenvalues differ from the original sketch covariance eigenvalues by at most the scalar condition factor
++
++\[
++\left(\frac{d_++\rho}{d_-+
++ho}\right)^{1/2}.
++\]
++
++If this factor is bounded or polylogarithmic in dimension, the exponent-level learned-mode count remains SGD-like.  In particular, an unstructured Gaussian sketch does not produce the aligned Adam/RMSProp exponent improvement unless its coordinate variances encode spectral scale.
++
++## Interpretation
++
++A Gaussian sketch mixes all spectral scales into each coordinate.  Diagonal Adam/RMSProp sees the diagonal profile \(d_j=(SHS^\top)_{jj}\), which is exchangeable across rows and typically trace-scale.  It therefore behaves like a scalar preconditioner at exponent level.
++
++This is the opposite of band-limited alignment: if trainable coordinates mix only comparable eigenvalues, Adam/RMSProp preserves \(q_{\rm eff}=1/2\); if trainable coordinates mix all eigenvalues isotropically, diagonal adaptivity loses spectral information and gives \(q_{\rm eff}=0\) at exponent level.
++
++## Consequence for the original sketched-linear model
++
++For the exact Gaussian-sketch model, the next theorem should analyze \(\Sigma=SHS^\top\)'s eigenvalue law together with the diagonal profile \(\operatorname{diag}(\Sigma)\).  The prediction is:
++
++\[
++\boxed{
++\text{i.i.d. Gaussian sketch coordinates should not show the full }a\mapsto a/2\text{ Adam exponent shift.}
++}
++\]
++
++To obtain Adam-like spectral flattening in a sketched/random-feature model, the feature map must retain spectral-band information in coordinatewise second moments.

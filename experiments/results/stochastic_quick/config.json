@@ -1,0 +1,23 @@
+{
+  "a": 1.5,
+  "b": 1.4,
+  "batch_size": 8,
+  "beta1": 0.9,
+  "beta2": 0.99,
+  "checkpoints": "100,200,400,800",
+  "dimension": 512,
+  "epsilon": 1e-08,
+  "grad_clip": 0.0,
+  "lr_adaptive": 0.005,
+  "lr_sgd": 0.05,
+  "no_plots": false,
+  "optimizers": "sgd,oracle,rmsprop,adam,adamw",
+  "outdir": "experiments/results/stochastic_quick",
+  "quick": true,
+  "rho": 1e-08,
+  "seed": 0,
+  "sigma": 0.1,
+  "steps": 800,
+  "trials": 2,
+  "weight_decay": 0.001
+}

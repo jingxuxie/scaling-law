@@ -113,6 +113,43 @@ def sample_batch_gradient(
     return (x.T @ residual) / batch_size
 
 
+def estimate_frozen_preconditioner(
+    rng: np.random.Generator,
+    lam: np.ndarray,
+    w_star: np.ndarray,
+    sigma: float,
+    batch_size: int,
+    burnin_batches: int,
+    rho: float,
+) -> np.ndarray:
+    """Estimate an initialization-time RMSProp preconditioner.
+
+    The estimate is normalized by its median ratio to lambda so `rho` has the
+    same interpretation as the oracle damped spectral floor.
+    """
+    w0 = np.zeros(len(lam), dtype=np.float64)
+    v = np.zeros(len(lam), dtype=np.float64)
+    batches = max(1, burnin_batches)
+    for _ in range(batches):
+        g = sample_batch_gradient(rng, w0, w_star, lam, sigma, batch_size)
+        v += g * g
+    v /= batches
+    active = np.isfinite(v) & np.isfinite(lam) & (v > 0) & (lam > 0)
+    if active.any():
+        scale = float(np.median(v[active] / lam[active]))
+        if scale > 0:
+            v = v / scale
+    return 1.0 / np.sqrt(v + rho)
+
+
+def normalize_optimizer_name(name: str) -> str:
+    aliases = {
+        "oracle_rmsprop": "oracle",
+        "oracle_preconditioner": "oracle",
+    }
+    return aliases.get(name.strip().lower(), name.strip().lower())
+
+
 def train_one(
     optimizer: str,
     lam: np.ndarray,
@@ -139,6 +176,17 @@ def train_one(
     elif optimizer == "oracle":
         lr = args.lr_adaptive
         oracle_p = 1.0 / np.sqrt(lam + args.rho)
+    elif optimizer == "frozen_rmsprop":
+        lr = args.lr_adaptive
+        frozen_p = estimate_frozen_preconditioner(
+            rng,
+            lam,
+            w_star,
+            sigma,
+            args.batch_size,
+            args.burnin_batches,
+            args.rho,
+        )
     else:
         lr = args.lr_adaptive
 
@@ -153,6 +201,8 @@ def train_one(
             w -= lr * g
         elif optimizer == "oracle":
             w -= lr * oracle_p * g
+        elif optimizer == "frozen_rmsprop":
+            w -= lr * frozen_p * g
         elif optimizer == "rmsprop":
             v = beta2 * v + (1.0 - beta2) * (g * g)
             w -= lr * g / np.sqrt(v + eps)
@@ -177,7 +227,7 @@ def train_one(
             if optimizer in {"rmsprop", "adam", "adamw"}:
                 vv = v / max(1e-12, 1.0 - beta2**step)
                 v_slope, q_eff = estimate_v_slope(vv, lam, eps)
-            elif optimizer == "oracle":
+            elif optimizer in {"oracle", "frozen_rmsprop"}:
                 v_slope, q_eff = 1.0, 0.5
             else:
                 v_slope, q_eff = 0.0, 0.0
@@ -274,18 +324,20 @@ def main() -> None:
     parser.add_argument("--a", type=float, default=1.5)
     parser.add_argument("--b", type=float, default=1.4)
     parser.add_argument("--sigma", type=float, default=0.1)
-    parser.add_argument("--steps", type=int, default=2000)
-    parser.add_argument("--checkpoints", type=str, default="100,200,400,800,1600,2000")
-    parser.add_argument("--trials", type=int, default=4)
+    parser.add_argument("--steps", type=int, default=None)
+    parser.add_argument("--checkpoints", type=str, default=None)
+    parser.add_argument("--n-values", type=str, default=None, help="Alias for --checkpoints; sets --steps to max value if --steps is omitted.")
+    parser.add_argument("--trials", "--reps", dest="trials", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--optimizers", type=str, default="sgd,oracle,rmsprop,adam,adamw")
+    parser.add_argument("--optimizers", "--algorithms", dest="optimizers", type=str, default="sgd,oracle,rmsprop,adam,adamw")
     parser.add_argument("--lr-sgd", type=float, default=0.05)
     parser.add_argument("--lr-adaptive", type=float, default=0.005)
     parser.add_argument("--rho", type=float, default=1e-8)
-    parser.add_argument("--epsilon", type=float, default=1e-8)
+    parser.add_argument("--epsilon", "--eps", dest="epsilon", type=float, default=1e-8)
     parser.add_argument("--beta1", type=float, default=0.9)
     parser.add_argument("--beta2", type=float, default=0.99)
     parser.add_argument("--weight-decay", type=float, default=1e-3)
+    parser.add_argument("--burnin-batches", type=int, default=64)
     parser.add_argument("--grad-clip", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--quick", action="store_true")
@@ -300,9 +352,14 @@ def main() -> None:
         args.batch_size = 8
         args.outdir = "experiments/results/stochastic_quick"
 
+    if args.checkpoints is None:
+        args.checkpoints = args.n_values or "100,200,400,800,1600,2000"
+    if args.steps is None:
+        args.steps = max(parse_int_list(args.checkpoints)) if args.n_values else 2000
+
     checkpoints = sorted(set(parse_int_list(args.checkpoints) + [args.steps]))
     checkpoints = [s for s in checkpoints if 1 <= s <= args.steps]
-    optimizers = parse_str_list(args.optimizers)
+    optimizers = [normalize_optimizer_name(opt) for opt in parse_str_list(args.optimizers)]
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     with (outdir / "config.json").open("w") as f:

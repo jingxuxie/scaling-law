@@ -1,0 +1,16 @@
+{
+  "a_values": "1.25,1.5,2.0",
+  "ambient_dim": 4096,
+  "band_kappa": 2.0,
+  "cases": "aligned,flat,diagonal_profile,band,haar,gaussian_sketch",
+  "dimension": 512,
+  "n_max": 10000.0,
+  "n_min": 10.0,
+  "no_plots": false,
+  "num_n": 40,
+  "outdir": "experiments/results/sketch_visibility",
+  "quick": false,
+  "rho_values": "1e-12,1e-8",
+  "seed": 0,
+  "theta_values": "0,0.25,0.5,0.75,1"
+}
