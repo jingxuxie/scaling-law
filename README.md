@@ -15,6 +15,8 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `notes/09_matching_filter_lower_bounds.md`: matching spectral lower-bound theorem. It proves that the bias and variance filters used throughout the notes are sharp for two-slope power-law spectra, including Adam/RMSProp and AdamW learned-mode counts.
 - `notes/10_coordinate_alignment.md`: coordinate-alignment theorem. It proves that diagonal adaptive methods are spectral only when coordinatewise gradient second moments retain spectral information; aligned coordinates give `q_eff=1/2`, while flat/bounded coordinate variances make RMSProp/Adam essentially scalar at exponent level.
 - `notes/11_bandlimited_partial_alignment.md`: band-limited partial-alignment theorem. It proves that arbitrary rotations within comparable-eigenvalue bands preserve the Adam/RMSProp `q_eff=1/2` exponent up to constants, while broad cross-band mixing can destroy spectral adaptivity.
+- `notes/12_smooth_source_bias_saturation.md`: smooth-source bias saturation theorem. It proves that the clean bias law `n^{-(b-1)/alpha}` saturates at `n^{-1}` when `b >= alpha + 1`, explaining out-of-regime bias-slope deviations in the sweeps.
+- `notes/13_gaussian_sketch_global_mixing.md`: Gaussian-sketch global-mixing theorem. It proves that high-effective-rank global Gaussian sketches flatten coordinate variances, making diagonal RMSProp/Adam approximately scalar at exponent level unless the sketch is spectrally aligned or band-limited.
 
 ## Manuscript draft materials
 
@@ -32,6 +34,10 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `experiments/adamw_weight_decay_filter.py`: verifies that AdamW decoupled weight decay saturates the learned-mode count at the cutoff `mu_i >= max(1/(N gamma), lambda_wd)`.
 - `experiments/exponent_level_filters.py`: deterministic exponent-level filter experiment. It fits log-log slopes for learned counts and bias filters for SGD, Adam/RMSProp, and AdamW.
 - `experiments/coordinate_alignment.py`: tests the coordinate-alignment theorem by comparing aligned, flat Hadamard, and random-orthogonal optimizer coordinates.
+
+## Results
+
+- `experiments/results/analysis_2026_06_15.md`: analysis of the first filter and alignment sweeps.
 
 ## Quick sanity checks
 
@@ -64,4 +70,4 @@ RMSProp / Adam / AdamW
   -> sharp bias and variance scaling filters
 ```
 
-The coordinate-alignment and band-limited partial-alignment theorems now explain when this mechanism survives a change of optimizer basis. The next high-impact target is to extend the proof strategy from band-limited alignment to Gaussian-sketched or random-feature regression, where coordinate/eigenvector alignment is partial and data-dependent.
+The first sweeps support the learned-count and alignment predictions. The smooth-source theorem explains the main bias-slope deviations. The Gaussian-sketch theorem clarifies the next research direction: global Gaussian sketches can erase diagonal spectral information, so the paper should distinguish aligned/band-limited features from globally mixed random features.
