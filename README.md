@@ -17,6 +17,7 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `notes/11_bandlimited_partial_alignment.md`: band-limited partial-alignment theorem. It proves that arbitrary rotations within comparable-eigenvalue bands preserve the Adam/RMSProp `q_eff=1/2` exponent up to constants, while broad cross-band mixing can destroy spectral adaptivity.
 - `notes/12_smooth_source_bias_saturation.md`: smooth-source bias saturation theorem. It proves that the clean bias law `n^{-(b-1)/alpha}` saturates at `n^{-1}` when `b >= alpha + 1`, explaining out-of-regime bias-slope deviations in the sweeps.
 - `notes/13_gaussian_sketch_global_mixing.md`: Gaussian-sketch global-mixing theorem. It proves that high-effective-rank global Gaussian sketches flatten coordinate variances, making diagonal RMSProp/Adam approximately scalar at exponent level unless the sketch is spectrally aligned or band-limited.
+- `notes/14_bandlimited_gaussian_features.md`: band-limited Gaussian-feature theorem. It proves that Gaussian random features within comparable-eigenvalue bands preserve Adam/RMSProp's `q_eff=1/2` spectral gains with high probability.
 
 ## Manuscript draft materials
 
@@ -26,6 +27,7 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 
 - `experiments/README.md`: local experiment-running instructions and recommended commands.
 - `experiments/run_sweeps.py`: main local sweep runner for deterministic exponent-level filters and coordinate-alignment experiments.
+- `experiments/bandlimited_feature_alignment.py`: compares aligned, band-limited Gaussian, and global Gaussian feature maps.
 - `experiments/synthetic_damped_preconditioning.py`: oracle damped spectral-preconditioning sanity check.
 - `experiments/frozen_rmsprop_bridge.py`: verifies the gradient-second-moment bridge `v_i \propto lambda_i` and compares frozen RMSProp to the oracle `q=1/2` preconditioner.
 - `experiments/online_rmsprop_tracking.py`: checks that online RMSProp has `slope(log v_t, log lambda) \approx 1`, `q_eff \approx 1/2`, and `v_t \approx d_t lambda` in diagonal Gaussian regression.
@@ -50,6 +52,7 @@ python experiments/adamw_weight_decay_filter.py
 python experiments/exponent_level_filters.py --quick
 python experiments/coordinate_alignment.py --dimension 512
 python experiments/run_sweeps.py --quick --mode all
+python experiments/bandlimited_feature_alignment.py --dimension 2048
 ```
 
 Stored quick outputs:
@@ -70,4 +73,4 @@ RMSProp / Adam / AdamW
   -> sharp bias and variance scaling filters
 ```
 
-The first sweeps support the learned-count and alignment predictions. The smooth-source theorem explains the main bias-slope deviations. The Gaussian-sketch theorem clarifies the next research direction: global Gaussian sketches can erase diagonal spectral information, so the paper should distinguish aligned/band-limited features from globally mixed random features.
+The first sweeps support the learned-count and alignment predictions. The smooth-source theorem explains the main bias-slope deviations. The sketch/global-mixing and band-limited Gaussian-feature theorems clarify the model-level message: diagonal Adam/RMSProp changes scaling exponents only when feature coordinates expose spectral structure; globally mixed sketches tend to erase that information, while band-limited random features preserve it.
