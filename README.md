@@ -21,6 +21,7 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `notes/15_profile_qeff_diagnostics.md`: profile-exponent diagnostic theorem. It proves that if coordinate second moments scale as `lambda_i^theta`, then the effective exponent is `q_eff=theta/2`.
 - `notes/16_bounded_preconditioner_no_exponent_change.md`: bounded-preconditioner theorem. It proves that bounded or sub-polynomial condition-number diagonal preconditioners cannot change power-law spectral exponents.
 - `notes/16_source_condition_stability.md`: source-condition stability theorem. It proves that spectral preconditioners preserve source energies exactly, and invariant band decompositions preserve block source mass, justifying the transformed-source assumption in aligned and band-limited settings.
+- `notes/17_compute_optimal_visible_spectrum.md`: compute-optimal visible-spectrum theorem. It derives the optimal allocation `M_*(C)`, `N_*(C)`, and compute-risk exponent as a function of the visible exponent `theta`.
 
 ## Manuscript draft materials
 
@@ -37,6 +38,7 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `experiments/stochastic_alignment_scaling.py`: runs actual stochastic mini-batch training across aligned, band-limited, flat, and Haar coordinate systems.
 - `experiments/stochastic_alignment_lr_grid.py`: runs a learning-rate grid for stochastic alignment experiments, so risk comparisons are not dominated by a single hand-picked step size.
 - `experiments/source_condition_diagnostic.py`: measures transformed-source exponents after applying coordinatewise preconditioners.
+- `experiments/compute_optimal_visible_spectrum.py`: optimizes the spectral risk proxy over `M,N` under compute `C≈MN` and checks the visible-spectrum compute-optimal phase diagram.
 - `experiments/synthetic_damped_preconditioning.py`: oracle damped spectral-preconditioning sanity check.
 - `experiments/frozen_rmsprop_bridge.py`: verifies the gradient-second-moment bridge `v_i \propto lambda_i` and compares frozen RMSProp to the oracle `q=1/2` preconditioner.
 - `experiments/online_rmsprop_tracking.py`: checks that online RMSProp has `slope(log v_t, log lambda) \approx 1`, `q_eff \approx 1/2`, and `v_t \approx d_t lambda` in diagonal Gaussian regression.
@@ -70,6 +72,7 @@ python experiments/stochastic_training_scaling.py --quick
 python experiments/stochastic_alignment_scaling.py --quick
 python experiments/stochastic_alignment_lr_grid.py --quick
 python experiments/source_condition_diagnostic.py --quick
+python experiments/compute_optimal_visible_spectrum.py --quick
 ```
 
 ## Current status
@@ -81,6 +84,7 @@ coordinatewise second moments expose spectral structure
   -> q_eff in [0, 1/2]
   -> visible-spectrum learned-mode count
   -> optimizer-dependent scaling filters
+  -> compute-optimal allocation and compute-risk exponent
 ```
 
-Aligned and band-limited coordinates preserve `q_eff≈1/2`; flat, Haar, and global Gaussian-sketch coordinates behave like `q_eff≈0`. The remaining empirical gaps for a high-impact paper are tuned stochastic risk comparisons and transformed-source diagnostics across coordinate systems.
+Aligned and band-limited coordinates preserve `q_eff≈1/2`; flat, Haar, and global Gaussian-sketch coordinates behave like `q_eff≈0`. Learning-rate calibrated stochastic experiments support the same diagnostic. The remaining empirical gaps for a high-impact paper are compute-optimal visible-spectrum experiments and larger random-feature/source-condition diagnostics.
