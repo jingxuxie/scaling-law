@@ -1,0 +1,13 @@
+{
+  "a": 1.5,
+  "b": 1.4,
+  "c_max": 10000000000.0,
+  "c_min": 10000.0,
+  "grid_size": 600,
+  "no_plots": false,
+  "num_c": 40,
+  "outdir": "experiments/results/compute_optimal_phase_grid/current_saturating",
+  "quick": false,
+  "theta_values": "0,0.25,0.5,0.75,1",
+  "weight_decay": 0.0
+}
