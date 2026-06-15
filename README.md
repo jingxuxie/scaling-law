@@ -5,7 +5,7 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 ## Current proof notes
 
 - `notes/01_fixed_spectral_preconditioning.md`: fixed spectral preconditioning baseline, `P_q = H^{-q}`.
-- `notes/02_damped_spectral_preconditioning.md`: damped spectral preconditioning, `P_{rho,q}=(H+rho I)^{-q}`, including the two-slope effective spectrum, bias/variance spectral sums, and Adam/RMSProp `q=1/2` corollary.
+- `notes/02_damped_spectral_preconditioning.md`: damped spectral preconditioning, `P_{rho,q}=(H+rho I)^{-q`, including the two-slope effective spectrum, bias/variance spectral sums, and Adam/RMSProp `q=1/2` corollary.
 - `notes/03_frozen_rmsprop_bridge.md`: frozen-RMSProp bridge theorem. It proves that, in diagonal Gaussian linear regression, coordinate gradient second moments satisfy `E[g_i^2] \asymp c_e lambda_i`, so a frozen RMSProp preconditioner is spectrally equivalent to `(H+rho I)^(-1/2)` with `rho = epsilon / c_e`.
 - `notes/04_online_rmsprop_tracking.md`: online RMSProp spectral-tracking theorem. It proves that the online second-moment EMA tracks `d_t lambda_i`, where `d_t` is the EMA of `sigma^2 + ||w_t-w*||_H^2`, so RMSProp tracks a time-varying damped `q=1/2` preconditioner with `rho_t = epsilon / d_t`.
 - `notes/05_online_rmsprop_sandwich.md`: conditional online RMSProp sandwich theorem. If online second moments track their conditional means and the residual scale stays in a constant band, online RMSProp has the same scaling filters as frozen damped `q=1/2` spectral preconditioning. A robust decoupled online estimator is proved to satisfy the tracking event.
@@ -19,6 +19,7 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `notes/13_gaussian_sketch_global_mixing.md`: Gaussian-sketch global-mixing theorem. It proves that high-effective-rank global Gaussian sketches flatten coordinate variances, making diagonal RMSProp/Adam approximately scalar at exponent level unless the sketch is spectrally aligned or band-limited.
 - `notes/14_bandlimited_gaussian_features.md`: band-limited Gaussian-feature theorem. It proves that Gaussian random features within comparable-eigenvalue bands preserve Adam/RMSProp's `q_eff=1/2` spectral gains with high probability.
 - `notes/15_profile_qeff_diagnostics.md`: profile-exponent diagnostic theorem. It proves that if coordinate second moments scale as `lambda_i^theta`, then the effective exponent is `q_eff=theta/2`, and it justifies estimating `q_eff` from second-moment slopes in experiments.
+- `notes/16_bounded_preconditioner_no_exponent_change.md`: bounded-preconditioner theorem. It proves that bounded or sub-polynomial condition-number diagonal preconditioners cannot change power-law spectral exponents, explaining why globally mixed Haar/Gaussian-sketch coordinates can have nontrivial sorted diagonal slopes but still have `q_eff≈0`.
 
 ## Manuscript draft materials
 
@@ -30,6 +31,7 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `experiments/run_sweeps.py`: main local sweep runner for deterministic exponent-level filters and coordinate-alignment experiments.
 - `experiments/bandlimited_feature_alignment.py`: compares aligned, band-limited Gaussian, and global Gaussian feature maps.
 - `experiments/profile_feature_sweep.py`: measures coordinate-variance profile exponents and checks the prediction `q_eff≈theta/2` across synthetic, aligned, flat, band-limited, and global feature maps.
+- `experiments/sketch_visibility_sweep.py`: measures effective preconditioned spectra for aligned, flat, profile, band-limited, Haar, and Gaussian-sketch feature systems.
 - `experiments/stochastic_training_scaling.py`: runs actual stochastic mini-batch training for SGD, oracle preconditioning, RMSProp, Adam, and AdamW in diagonal Gaussian regression.
 - `experiments/synthetic_damped_preconditioning.py`: oracle damped spectral-preconditioning sanity check.
 - `experiments/frozen_rmsprop_bridge.py`: verifies the gradient-second-moment bridge `v_i \propto lambda_i` and compares frozen RMSProp to the oracle `q=1/2` preconditioner.
@@ -43,6 +45,7 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 ## Results
 
 - `experiments/results/analysis_2026_06_15.md`: analysis of the first filter and alignment sweeps.
+- `experiments/results/analysis_after_second_batch.md`: analysis of the stochastic-training and sketch-visibility sweeps.
 
 ## Quick sanity checks
 
@@ -57,6 +60,7 @@ python experiments/coordinate_alignment.py --dimension 512
 python experiments/run_sweeps.py --quick --mode all
 python experiments/bandlimited_feature_alignment.py --dimension 2048
 python experiments/profile_feature_sweep.py --quick
+python experiments/sketch_visibility_sweep.py --quick
 python experiments/stochastic_training_scaling.py --quick
 ```
 
@@ -78,4 +82,4 @@ RMSProp / Adam / AdamW
   -> sharp bias and variance scaling filters
 ```
 
-The first sweeps support the learned-count and alignment predictions. The smooth-source theorem explains the main bias-slope deviations. The newest scripts test actual stochastic training and the profile-exponent diagnostic `theta -> q_eff=theta/2`. The model-level message is now sharper: diagonal Adam/RMSProp changes scaling exponents only when feature coordinates expose spectral structure; globally mixed sketches tend to erase that information, while aligned, band-limited, or high-profile-exponent features preserve it.
+The first sweeps support the learned-count and alignment predictions. The stochastic-training run validates that actual RMSProp/Adam/AdamW second moments produce `q_eff≈1/2` in aligned diagonal regression. The sketch-visibility sweep supports the phase diagram: aligned and band-limited features preserve `q_eff≈1/2`, while Haar/global Gaussian-sketch coordinates behave like `q_eff≈0`. The model-level message is now sharper: diagonal Adam/RMSProp changes scaling exponents only when feature coordinates expose spectral structure; globally mixed sketches tend to erase that information, while aligned, band-limited, or high-profile-exponent features preserve it.
