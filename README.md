@@ -9,17 +9,18 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `notes/03_frozen_rmsprop_bridge.md`: frozen-RMSProp bridge theorem. It proves that, in diagonal Gaussian linear regression, coordinate gradient second moments satisfy `E[g_i^2] \asymp c_e lambda_i`, so a frozen RMSProp preconditioner is spectrally equivalent to `(H+rho I)^(-1/2)` with `rho = epsilon / c_e`.
 - `notes/04_online_rmsprop_tracking.md`: online RMSProp spectral-tracking theorem. It proves that the online second-moment EMA tracks `d_t lambda_i`, where `d_t` is the EMA of `sigma^2 + ||w_t-w*||_H^2`, so RMSProp tracks a time-varying damped `q=1/2` preconditioner with `rho_t = epsilon / d_t`.
 - `notes/05_online_rmsprop_sandwich.md`: conditional online RMSProp sandwich theorem. If online second moments track their conditional means and the residual scale stays in a constant band, online RMSProp has the same scaling filters as frozen damped `q=1/2` spectral preconditioning. A robust decoupled online estimator is proved to satisfy the tracking event.
-- `notes/06_raw_ema_tracking.md`: raw-EMA tracking theorem for ordinary RMSProp. It proves that the unmodified EMA tracks `d_t lambda_i` with high probability under an effective-window/leverage condition, despite product-Gaussian squared-gradient tails. This removes the main tracking assumption from the sandwich theorem and again yields the damped `q=1/2` scaling law.
+- `notes/06_raw_ema_tracking.md`: raw-EMA tracking theorem for ordinary RMSProp. It proves that the unmodified EMA tracks `d_t lambda_i` with high probability under an effective-window/leverage condition, despite product-Gaussian squared-gradient tails.
 - `notes/07_adam_momentum_filter.md`: Adam first-moment momentum theorem. It proves that `beta1` momentum is a temporal filter: it changes constants and stability margins but leaves the spectral learned-mode count and the emergent `q_eff=1/2` second-moment preconditioning law unchanged.
-- `notes/08_adamw_weight_decay_filter.md`: AdamW decoupled-weight-decay theorem. It proves that AdamW equals Adam's damped `q_eff=1/2` preconditioner plus a separate shrinkage filter, with active cutoff `mu_i >= max(1/n, lambda_wd)` and effective horizon `T_eff = min(n, lambda_wd^{-1})` after scalar normalization.
-- `notes/09_matching_filter_lower_bounds.md`: matching spectral lower-bound theorem. It proves that the bias and variance filters used throughout the notes are sharp for two-slope power-law spectra, including Adam/RMSProp and AdamW learned-mode counts.
-- `notes/10_coordinate_alignment.md`: coordinate-alignment theorem. It proves that diagonal adaptive methods are spectral only when coordinatewise gradient second moments retain spectral information; aligned coordinates give `q_eff=1/2`, while flat/bounded coordinate variances make RMSProp/Adam essentially scalar at exponent level.
-- `notes/11_bandlimited_partial_alignment.md`: band-limited partial-alignment theorem. It proves that arbitrary rotations within comparable-eigenvalue bands preserve the Adam/RMSProp `q_eff=1/2` exponent up to constants, while broad cross-band mixing can destroy spectral adaptivity.
-- `notes/12_smooth_source_bias_saturation.md`: smooth-source bias saturation theorem. It proves that the clean bias law `n^{-(b-1)/alpha}` saturates at `n^{-1}` when `b >= alpha + 1`, explaining out-of-regime bias-slope deviations in the sweeps.
+- `notes/08_adamw_weight_decay_filter.md`: AdamW decoupled-weight-decay theorem. It proves that AdamW equals Adam's damped `q_eff=1/2` preconditioner plus a separate shrinkage filter.
+- `notes/09_matching_filter_lower_bounds.md`: matching spectral lower-bound theorem. It proves that the bias and variance filters used throughout the notes are sharp for two-slope power-law spectra.
+- `notes/10_coordinate_alignment.md`: coordinate-alignment theorem. It proves that diagonal adaptive methods are spectral only when coordinatewise gradient second moments retain spectral information.
+- `notes/11_bandlimited_partial_alignment.md`: band-limited partial-alignment theorem. It proves that arbitrary rotations within comparable-eigenvalue bands preserve the Adam/RMSProp `q_eff=1/2` exponent up to constants.
+- `notes/12_smooth_source_bias_saturation.md`: smooth-source bias saturation theorem. It explains out-of-regime bias-slope deviations in the sweeps.
 - `notes/13_gaussian_sketch_global_mixing.md`: Gaussian-sketch global-mixing theorem. It proves that high-effective-rank global Gaussian sketches flatten coordinate variances, making diagonal RMSProp/Adam approximately scalar at exponent level unless the sketch is spectrally aligned or band-limited.
 - `notes/14_bandlimited_gaussian_features.md`: band-limited Gaussian-feature theorem. It proves that Gaussian random features within comparable-eigenvalue bands preserve Adam/RMSProp's `q_eff=1/2` spectral gains with high probability.
-- `notes/15_profile_qeff_diagnostics.md`: profile-exponent diagnostic theorem. It proves that if coordinate second moments scale as `lambda_i^theta`, then the effective exponent is `q_eff=theta/2`, and it justifies estimating `q_eff` from second-moment slopes in experiments.
-- `notes/16_bounded_preconditioner_no_exponent_change.md`: bounded-preconditioner theorem. It proves that bounded or sub-polynomial condition-number diagonal preconditioners cannot change power-law spectral exponents, explaining why globally mixed Haar/Gaussian-sketch coordinates can have nontrivial sorted diagonal slopes but still have `q_eff≈0`.
+- `notes/15_profile_qeff_diagnostics.md`: profile-exponent diagnostic theorem. It proves that if coordinate second moments scale as `lambda_i^theta`, then the effective exponent is `q_eff=theta/2`.
+- `notes/16_bounded_preconditioner_no_exponent_change.md`: bounded-preconditioner theorem. It proves that bounded or sub-polynomial condition-number diagonal preconditioners cannot change power-law spectral exponents.
+- `notes/16_source_condition_stability.md`: source-condition stability theorem. It proves that spectral preconditioners preserve source energies exactly, and invariant band decompositions preserve block source mass, justifying the transformed-source assumption in aligned and band-limited settings.
 
 ## Manuscript draft materials
 
@@ -33,19 +34,23 @@ This repository is a working research notebook for extending the NeurIPS 2024 li
 - `experiments/profile_feature_sweep.py`: measures coordinate-variance profile exponents and checks the prediction `q_eff≈theta/2` across synthetic, aligned, flat, band-limited, and global feature maps.
 - `experiments/sketch_visibility_sweep.py`: measures effective preconditioned spectra for aligned, flat, profile, band-limited, Haar, and Gaussian-sketch feature systems.
 - `experiments/stochastic_training_scaling.py`: runs actual stochastic mini-batch training for SGD, oracle preconditioning, RMSProp, Adam, and AdamW in diagonal Gaussian regression.
+- `experiments/stochastic_alignment_scaling.py`: runs actual stochastic mini-batch training across aligned, band-limited, flat, and Haar coordinate systems.
+- `experiments/stochastic_alignment_lr_grid.py`: runs a learning-rate grid for stochastic alignment experiments, so risk comparisons are not dominated by a single hand-picked step size.
+- `experiments/source_condition_diagnostic.py`: measures transformed-source exponents after applying coordinatewise preconditioners.
 - `experiments/synthetic_damped_preconditioning.py`: oracle damped spectral-preconditioning sanity check.
 - `experiments/frozen_rmsprop_bridge.py`: verifies the gradient-second-moment bridge `v_i \propto lambda_i` and compares frozen RMSProp to the oracle `q=1/2` preconditioner.
 - `experiments/online_rmsprop_tracking.py`: checks that online RMSProp has `slope(log v_t, log lambda) \approx 1`, `q_eff \approx 1/2`, and `v_t \approx d_t lambda` in diagonal Gaussian regression.
 - `experiments/raw_ema_tracking.py`: isolates the raw EMA concentration mechanism with product-Gaussian squared-gradient noise and verifies that `v_t \approx d_t lambda` and `q_eff \approx 1/2`.
-- `experiments/adam_momentum_filter.py`: verifies that Adam `beta1` momentum leaves the learned-mode cutoff `N gamma mu_i \asymp 1` unchanged up to constants for a fixed damped `q=1/2` preconditioner.
-- `experiments/adamw_weight_decay_filter.py`: verifies that AdamW decoupled weight decay saturates the learned-mode count at the cutoff `mu_i >= max(1/(N gamma), lambda_wd)`.
-- `experiments/exponent_level_filters.py`: deterministic exponent-level filter experiment. It fits log-log slopes for learned counts and bias filters for SGD, Adam/RMSProp, and AdamW.
-- `experiments/coordinate_alignment.py`: tests the coordinate-alignment theorem by comparing aligned, flat Hadamard, and random-orthogonal optimizer coordinates.
+- `experiments/adam_momentum_filter.py`: verifies that Adam `beta1` momentum leaves the learned-mode cutoff `N gamma mu_i \asymp 1` unchanged up to constants.
+- `experiments/adamw_weight_decay_filter.py`: verifies that AdamW decoupled weight decay saturates the learned-mode count.
+- `experiments/exponent_level_filters.py`: deterministic exponent-level filter experiment.
+- `experiments/coordinate_alignment.py`: tests the coordinate-alignment theorem.
 
 ## Results
 
 - `experiments/results/analysis_2026_06_15.md`: analysis of the first filter and alignment sweeps.
 - `experiments/results/analysis_after_second_batch.md`: analysis of the stochastic-training and sketch-visibility sweeps.
+- `experiments/results/analysis_after_stochastic_alignment.md`: analysis after stochastic coordinate-alignment experiments, with recommended next runs.
 
 ## Quick sanity checks
 
@@ -62,24 +67,20 @@ python experiments/bandlimited_feature_alignment.py --dimension 2048
 python experiments/profile_feature_sweep.py --quick
 python experiments/sketch_visibility_sweep.py --quick
 python experiments/stochastic_training_scaling.py --quick
+python experiments/stochastic_alignment_scaling.py --quick
+python experiments/stochastic_alignment_lr_grid.py --quick
+python experiments/source_condition_diagnostic.py --quick
 ```
-
-Stored quick outputs:
-
-- `experiments/results/quick_exponent_level_filters.txt`
-- `experiments/results/quick_coordinate_alignment.txt`
 
 ## Current status
 
-The diagonal Gaussian optimizer-theory chain is complete at the level of spectral upper and lower bounds:
+The theory and experiments now support the central mechanism:
 
 ```text
-RMSProp / Adam / AdamW
-  -> gradient second moments track lambda_i in aligned coordinates
-  -> q_eff = 1/2 damped spectral preconditioning
-  -> learned-mode count K_{rho,1/2}(n)
-  -> AdamW replaces n by min(n, lambda_wd^{-1})
-  -> sharp bias and variance scaling filters
+coordinatewise second moments expose spectral structure
+  -> q_eff in [0, 1/2]
+  -> visible-spectrum learned-mode count
+  -> optimizer-dependent scaling filters
 ```
 
-The first sweeps support the learned-count and alignment predictions. The stochastic-training run validates that actual RMSProp/Adam/AdamW second moments produce `q_eff≈1/2` in aligned diagonal regression. The sketch-visibility sweep supports the phase diagram: aligned and band-limited features preserve `q_eff≈1/2`, while Haar/global Gaussian-sketch coordinates behave like `q_eff≈0`. The model-level message is now sharper: diagonal Adam/RMSProp changes scaling exponents only when feature coordinates expose spectral structure; globally mixed sketches tend to erase that information, while aligned, band-limited, or high-profile-exponent features preserve it.
+Aligned and band-limited coordinates preserve `q_eff≈1/2`; flat, Haar, and global Gaussian-sketch coordinates behave like `q_eff≈0`. The remaining empirical gaps for a high-impact paper are tuned stochastic risk comparisons and transformed-source diagnostics across coordinate systems.
