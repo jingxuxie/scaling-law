@@ -1,1 +1,400 @@
-PLACEHOLDER
+\documentclass{article}
+\usepackage{iclr2026_conference,times}
+\usepackage{amsmath,amssymb,amsfonts,amsthm,mathtools}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{microtype}
+\hypersetup{colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}{Proposition}
+\newtheorem{lemma}{Lemma}
+\newtheorem{corollary}{Corollary}
+\newtheorem{assumption}{Assumption}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\as}{\asymp}
+\newcommand{\pre}{\preceq}
+\newcommand{\Sig}{\Sigma}
+\newcommand{\tSig}{\widetilde\Sigma}
+\newcommand{\tmu}{\widetilde\mu}
+\newcommand{\ts}{\widetilde s}
+\newcommand{\qeff}{q_{\mathrm{eff}}}
+\newcommand{\Neff}{N_{\mathrm{eff}}}
+\newcommand{\Kvis}{K_{\rho,\theta}}
+
+\title{Visible Spectrum: When Adaptive Optimizers Change Scaling Laws}
+\author{Jingxu Xie et al.}
+%\iclrfinalcopy
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Scaling laws guide decisions about model size, data, and compute, but they usually treat the optimizer as a constant-factor detail.  We show that this misses a basic mechanism: even in Gaussian linear regression, coordinatewise adaptive optimizers change scaling exponents only when their second moments make the covariance spectrum visible.  We introduce a \emph{visible spectrum} exponent $\theta\in[0,1]$.  If the diagonal preconditioner learned by RMSProp/Adam is spectrally comparable to $(\Sigma^\theta+\rho I)^{-1/2}$, then
+\[
+    \lambda_i(P^{1/2}\Sigma P^{1/2})
+    \asymp
+    \lambda_i(\Sigma)(\lambda_i(\Sigma)^\theta+\rho)^{-1/2},
+    \qquad
+    q_{\rm eff}=\theta/2.
+\]
+Thus, for $\lambda_i\asymp i^{-a}$, the learned-mode count changes from the SGD rate $n^{1/a}$ to $n^{1/[a(1-\theta/2)]}$ before damping.  With source exponent $b$, this yields sharp risk and compute laws, including the compute exponent
+\[
+    \beta(\theta)=\frac{b-1}{\max\{a(1-\theta/2),b\}+1}.
+\]
+The theory separates Adam's components: second moments determine the spectral exponent; first-moment momentum changes constants and stability; AdamW weight decay imposes a learned-mode cap that must decay with compute to preserve the no-decay law.  Experiments with deterministic filters, stochastic training, coordinate rotations, random-feature/sketched covariances, compute-optimal sweeps, and learning-rate grids support the mechanism.  Adaptive optimizers change scaling laws through \emph{visible spectral information}, not through adaptivity alone.
+\end{abstract}
+
+\section{Introduction}
+Scaling laws have become central to modern machine learning.  They forecast loss as a function of data, parameters, and compute, and they have shaped the design of large language models and other frontier systems \citep{hestness2017deep,kaplan2020scaling,henighan2020scaling,hoffmann2022training}.  Yet optimizer choice is usually treated as a tuning detail.  This is at odds with practice: frontier systems are typically trained with Adam or AdamW, and optimizer hyperparameters often affect performance across scales.
+
+This paper asks: \emph{When can an adaptive optimizer change a scaling exponent, rather than merely a constant?}  We answer in power-law Gaussian linear regression, a setting that is minimal but retains approximation error, optimization bias, variance/effective dimension, power-law spectra, source conditions, compute allocation, and optimizer-induced preconditioning \citep{bartlett2020benign,hastie2022surprises,bordelon2020spectrum,canatar2021spectral,lin2024scaling}.
+
+\paragraph{Main idea.} Coordinatewise adaptive methods do not directly observe covariance eigenvalues.  They observe coordinatewise gradient second moments.  For Gaussian squared loss, those second moments are proportional to the diagonal of the covariance in the optimizer coordinate system.  If optimizer coordinates are aligned with covariance eigendirections, Adam/RMSProp behaves like damped spectral preconditioning with exponent $q=1/2$.  If coordinates are globally mixed so that all coordinate variances are flat, the same coordinatewise rule is scalar up to constants and cannot change the spectral exponent.
+
+\paragraph{Contributions.}
+\begin{enumerate}[leftmargin=1.4em,itemsep=0.25em]
+    \item We prove a visible-spectrum theorem: if $P\asymp(\Sigma^\theta+\rho I)^{-1/2}$, then $q_{\rm eff}=\theta/2$ and the preconditioned spectrum is determined.
+    \item We derive sharp risk and compute-optimal laws, including a visibility phase transition.
+    \item We decompose Adam/RMSProp/AdamW: second moments determine $q_{\rm eff}$, momentum changes constants and stability, and AdamW weight decay creates a learned-mode cap requiring compute-dependent decay.
+    \item We prove alignment results: eigenbasis and band-limited features expose spectrum; flat, Haar, and isotropic Gaussian sketches hide it.
+    \item We validate the theory with deterministic filters, stochastic training, learning-rate sweeps, visible-profile interpolation, source diagnostics, compute-optimal sweeps, AdamW decay schedules, and random-feature/sketched-coordinate experiments.
+\end{enumerate}
+
+\begin{figure}[t]
+\centering
+\fbox{\begin{minipage}{0.93\linewidth}
+\textbf{Placeholder for Figure 1: visible-spectrum mechanism.}
+Left: coordinatewise second moments track $\diag(\Sigma)$, not eigenvalues directly.
+Middle: aligned/band-limited features yield $q_{\rm eff}\approx1/2$, while flat/Haar/global sketches yield $q_{\rm eff}\approx0$.
+Right: $\theta$ controls learned-mode count, risk, compute allocation, and AdamW decay schedules.
+\end{minipage}}
+\caption{Coordinatewise adaptivity changes scaling exponents only when the coordinate basis makes spectral information visible.}
+\label{fig:overview}
+\end{figure}
+
+\section{Setup}
+Let $x\sim\mathcal N(0,H)$ and $y=\langle x,w^\star\rangle+\xi$, where $\E\xi=0$ and $\E\xi^2=\sigma^2$.  A trainable feature representation is $z=Sx$, with covariance $\Sigma=\E[zz^\top]=SHS^\top$.  We measure excess risk $R(w)-\sigma^2=\|w-w^\star\|_\Sigma^2$.
+
+\begin{assumption}[Power-law spectrum]
+\label{ass:spectrum}
+For some $a>1$, the ordered eigenvalues of $\Sigma$ satisfy $\lambda_i(\Sigma)\asymp i^{-a}$.
+\end{assumption}
+
+Let $\Sigma v_i=\lambda_i v_i$ and define source energies $s_i=\lambda_i\langle v_i,w^\star\rangle^2$.
+\begin{assumption}[Source condition]
+\label{ass:source}
+For some $b>1$, $s_i\asymp i^{-b}$.  For noncommuting preconditioners, the risk theorem assumes the analogous condition in the transformed basis.  Appendix~\ref{app:source} shows that this is automatic for exact spectral preconditioners and holds in band-averaged form for invariant band-limited decompositions.
+\end{assumption}
+We write $N$ for samples/updates, $M$ for model dimension, $\Neff=N/\log N$, and $n=\Neff\gamma$.
+
+\section{Visible spectrum of coordinatewise adaptivity}
+\begin{lemma}[Coordinate second moments]
+\label{lem:grad-second}
+Let $z\sim\mathcal N(0,\Sigma)$, $y=\langle z,w^\star\rangle+\xi$, and $e=w-w^\star$.  For $g=(\langle z,e\rangle-\xi)z$,
+\[
+    \E[g_j^2\mid e]=c_e\Sigma_{jj}+2(\Sigma e)_j^2,
+    \qquad c_e=\sigma^2+\|e\|_\Sigma^2.
+\]
+Consequently, $c_e\Sigma_{jj}\le \E[g_j^2\mid e]\le3c_e\Sigma_{jj}$.
+\end{lemma}
+\begin{proof}
+Let $U=\langle z,e\rangle-\xi$ and $Z_j=z_j$.  Conditionally on $e$, $(U,Z_j)$ is centered Gaussian with $\E U^2=c_e$, $\E Z_j^2=\Sigma_{jj}$, and $\E[UZ_j]=(\Sigma e)_j$.  Isserlis' identity gives $\E[U^2Z_j^2]=\E U^2\E Z_j^2+2\E[UZ_j]^2$.  The upper bound follows from $(\Sigma e)_j^2\le(e^\top\Sigma e)\Sigma_{jj}\le c_e\Sigma_{jj}$.
+\end{proof}
+
+\begin{definition}[Visible spectral exponent]
+\label{def:visible}
+A diagonal adaptive preconditioner $P\succ0$ has visible exponent $\theta\in[0,1]$ at damping $\rho\ge0$ if there are constants $0<c\le C<\infty$, independent of scale, such that
+\begin{equation}
+\label{eq:comparability}
+    c(\Sigma^\theta+\rho I)^{-1/2}\pre P\pre C(\Sigma^\theta+\rho I)^{-1/2}.
+\end{equation}
+\end{definition}
+
+\begin{theorem}[Visible-spectrum theorem]
+\label{thm:visible-spectrum}
+Assume \eqref{eq:comparability}.  Let $\tSig=P^{1/2}\Sigma P^{1/2}$.  Then
+\[
+    \lambda_i(\tSig)\asymp\lambda_i(\Sigma)(\lambda_i(\Sigma)^\theta+\rho)^{-1/2}.
+\]
+If $\lambda_i(\Sigma)\asymp i^{-a}$ and damping is inactive on the range of interest, then
+\[
+    \lambda_i(\tSig)\asymp i^{-a(1-\theta/2)},\qquad q_{\rm eff}=\theta/2.
+\]
+\end{theorem}
+\begin{proof}
+The nonzero eigenvalues of $P^{1/2}\Sigma P^{1/2}$ equal those of $\Sigma^{1/2}P\Sigma^{1/2}$.  By \eqref{eq:comparability}, $\Sigma^{1/2}P\Sigma^{1/2}$ is Loewner-sandwiched by constant multiples of $\Sigma^{1/2}(\Sigma^\theta+\rho I)^{-1/2}\Sigma^{1/2}$.  The latter commutes with $\Sigma$ and has eigenvalues $\lambda_i(\Sigma)(\lambda_i(\Sigma)^\theta+\rho)^{-1/2}$.  The min-max principle proves the result.
+\end{proof}
+
+\begin{corollary}[Learned-mode count]
+\label{cor:learned-count}
+Let $K_{\rho,\theta}(n)=\#\{i:\lambda_i(\tSig)\gtrsim n^{-1}\}$.  For $\theta>0$,
+\[
+    K_{\rho,\theta}(n)\asymp
+    \begin{cases}
+    n^{1/[a(1-\theta/2)]}, & n\lesssim \rho^{-(1/\theta-1/2)},\\[4pt]
+    \rho^{-1/(2a)}n^{1/a}, & n\gtrsim \rho^{-(1/\theta-1/2)}.
+    \end{cases}
+\]
+For $\theta=0$, $K_{\rho,0}(n)\asymp n^{1/a}$.
+\end{corollary}
+
+\section{Risk, compute, and optimizer components}
+Let $\tmu_i=\lambda_i(\tSig)$ and let $\ts_i$ be the source energy in the transformed basis.  The exact filter form is
+\begin{equation}
+\label{eq:filters}
+    \E R_M(w_N)-\sigma^2\asymp
+    \sum_{i>M}\ts_i+\sum_{i\le M}\frac{\ts_i}{1+n\tmu_i}
+    +\frac1{\Neff}\sum_{i\le M}\min\{1,n^2\tmu_i^2\}.
+\end{equation}
+
+\begin{theorem}[Visible-spectrum risk law]
+\label{thm:risk}
+Let $\alpha=a(1-\theta/2)$.  Assume the transformed source condition $\ts_i\asymp i^{-b}$ and $1<b<\alpha+1$.  Then, up to constants and logarithmic factors,
+\[
+    \E R_M(w_N)-\sigma^2\asymp
+    M^{1-b}+K_{\rho,\theta}(n)^{1-b}
+    +\frac{\min\{M,K_{\rho,\theta}(n)\}}{\Neff}.
+\]
+\end{theorem}
+
+Let compute be $C\asymp MN$.  In the pre-damping regime, the sharp proxy is
+\begin{equation}
+\label{eq:compute-proxy}
+    R(M,N,K)-\sigma^2\asymp M^{1-b}+K^{1-b}+K/N,
+\end{equation}
+subject to $K\le N^{1/\alpha}$.
+
+\begin{theorem}[Compute-optimal visible scaling]
+\label{thm:compute}
+Let $m=\max\{\alpha,b\}$ and $\alpha=a(1-\theta/2)$.  Then
+\[
+    M_\star(C)\asymp C^{1/(m+1)},\qquad
+    N_\star(C)\asymp C^{m/(m+1)},\qquad
+    K_\star(C)\asymp C^{1/(m+1)}.
+\]
+Moreover, $R_\star(C)-\sigma^2\asymp C^{-(b-1)/(m+1)}$, so
+\[
+    \beta(\theta)=\frac{b-1}{\max\{a(1-\theta/2),b\}+1}.
+\]
+\end{theorem}
+
+\begin{corollary}[Visibility phase transition]
+\label{cor:phase}
+Define $\theta_c=2(1-b/a)$.  When $0<\theta_c<1$,
+\[
+    \beta(\theta)=
+    \begin{cases}
+    \dfrac{b-1}{a(1-\theta/2)+1}, & 0\le\theta\le\theta_c,\\[8pt]
+    \dfrac{b-1}{b+1}, & \theta\ge\theta_c.
+    \end{cases}
+\]
+Thus increasing visible spectral information improves the compute exponent only until the variance-limited phase.
+\end{corollary}
+
+\paragraph{Adam components.} The second moment determines $P$ and hence $q_{\rm eff}$.  First-moment momentum changes constants and stability but not the learned-mode cutoff: for fixed effective eigenvalue $\mu_i$, the population momentum polynomial has a root $1-\gamma\mu_i+O((\gamma\mu_i)^2)$.  AdamW decoupled weight decay adds a shrinkage floor $\delta/(\mu_i+\delta)$, so learned modes require $\mu_i\gtrsim\max\{n^{-1},\delta\}$.
+
+\begin{theorem}[Compute-dependent AdamW decay]
+\label{thm:adamw}
+Let $m=\max\{\alpha,b\}$ and $\delta(C)=C^{-s}$.  Under the weight-decay cap, the compute-risk exponent is
+\[
+    \beta_{\rm wd}(\theta,s)=
+    \min\left\{\frac{(b-1)s}{\alpha},\frac{b-1}{m+1}\right\}.
+\]
+The no-decay compute law is recovered iff $s\ge\alpha/(m+1)$.  Fixed weight decay corresponds to $s=0$ and creates an asymptotic floor.
+\end{theorem}
+
+\section{When is the spectrum visible?}
+\begin{proposition}[Aligned coordinates]
+If optimizer coordinates are eigenvectors of $\Sigma$, then $P=(\Sigma+\rho I)^{-1/2}$ and $\theta=1$.
+\end{proposition}
+\begin{proposition}[Band-limited mixing]
+Suppose coordinates are partitioned into spectral bands $B_\ell$ such that $\lambda_i\asymp\Lambda_\ell$ for $i\in B_\ell$, and the optimizer basis mixes coordinates only within each band.  Then $P\asymp(\Sigma+\rho I)^{-1/2}$ up to band constants, so $\theta=1$ and $q_{\rm eff}=1/2$.
+\end{proposition}
+\begin{proposition}[Flat and globally mixed coordinates]
+If $d_{\min}\le\Sigma_{jj}\le d_{\max}$ with $d_{\max}/d_{\min}=O(1)$, then $P\asymp cI$ and the spectrum of $P^{1/2}\Sigma P^{1/2}$ is the spectrum of $\Sigma$ up to constants.  Hence $\theta=0$ and $q_{\rm eff}=0$.
+\end{proposition}
+
+\begin{figure}[t]
+\centering
+\fbox{\begin{minipage}{0.93\linewidth}
+\textbf{Placeholder for Figure 2: visibility regimes.}
+Plot measured $q_{\rm eff}$ across aligned, band-limited, synthetic $\theta$ profiles, Haar, and Gaussian-sketch feature systems.  Expected: aligned/band near $0.5$, synthetic profiles on the line $\theta/2$, Haar/sketch near $0$.
+\end{minipage}}
+\caption{Feature coordinates determine whether coordinatewise second moments are spectral or scalar.}
+\label{fig:qeff-regimes}
+\end{figure}
+
+\section{Experiments}
+Our experiments isolate the mechanisms in the theory.  We report both final risk and $q_{\rm eff}$: risk measures finite-time performance, while $q_{\rm eff}$ identifies the scaling-law mechanism.
+
+\paragraph{Deterministic filters and stochastic visibility.} Deterministic sweeps verify learned-count predictions for SGD, Adam/RMSProp-like spectra, and AdamW weight decay.  Mini-batch training confirms that RMSProp/Adam/AdamW learn $q_{\rm eff}\approx1/2$ in aligned and band-limited coordinates, while flat/Haar coordinates have $q_{\rm eff}\approx0$.
+
+\paragraph{Visible-profile interpolation.} A controlled stochastic experiment uses $P_{\theta,i}=(\lambda_i^\theta+\rho)^{-1/2}$.  For $a=1.5,b=1.4$, tuned final risk decreases monotonically as $\theta$ increases (Table~\ref{tab:theta}).
+
+\begin{table}[t]
+\centering
+\caption{Stochastic visible-profile training.}
+\label{tab:theta}
+\begin{tabular}{ccccc}
+\toprule
+$\theta$ & best LR & final risk & risk slope & predicted $q_{\rm eff}$ \\
+\midrule
+0.00 & 0.03 & 0.3177 & $-0.330$ & 0.000 \\
+0.25 & 0.03 & 0.2245 & $-0.399$ & 0.125 \\
+0.50 & 0.03 & 0.1330 & $-0.509$ & 0.250 \\
+0.75 & 0.03 & 0.0534 & $-0.724$ & 0.375 \\
+1.00 & 0.03 & 0.0074 & $-1.252$ & 0.500 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Compute-optimal scaling and AdamW schedules.} Compute-optimal sweeps optimize \eqref{eq:compute-proxy}.  In a hard-source run ($a=3,b=1.4$), the compute exponent improves monotonically with $\theta$ (Table~\ref{tab:compute}).  AdamW schedule experiments confirm Theorem~\ref{thm:adamw}.
+
+\begin{table}[t]
+\centering
+\caption{Compute-optimal hard-source run with $a=3,b=1.4$.}
+\label{tab:compute}
+\begin{tabular}{ccccc}
+\toprule
+$\theta$ & $\alpha$ & observed risk exp. & predicted risk exp. & phase \\
+\midrule
+0.00 & 3.000 & $-0.102$ & $-0.100$ & time-limited \\
+0.25 & 2.625 & $-0.113$ & $-0.110$ & time-limited \\
+0.50 & 2.250 & $-0.128$ & $-0.123$ & time-limited \\
+0.75 & 1.875 & $-0.148$ & $-0.139$ & time-limited \\
+1.00 & 1.500 & $-0.167$ & $-0.160$ & time-limited \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\fbox{\begin{minipage}{0.93\linewidth}
+\textbf{Placeholder for Figure 3: compute and AdamW phase diagrams.}
+Left: compute-risk exponent versus $\theta$.  Middle: optimal $M,N,K$ exponents.  Right: AdamW schedule exponent $s$ versus compute-risk exponent.
+\end{minipage}}
+\caption{Visible spectral information changes compute-optimal scaling until saturation; AdamW decay must shrink with compute to avoid a learned-mode cap.}
+\label{fig:compute}
+\end{figure}
+
+\paragraph{Random-feature and sketched-coordinate experiments.} In aligned and band-limited features, coordinatewise Adam/RMSProp/AdamW have $q_{\rm eff}\approx0.48$--$0.49$.  In Haar and global Gaussian-sketch features, they have $q_{\rm eff}\approx0$, while a spectral oracle remains at $q_{\rm eff}=1/2$.  A wide learning-rate run shows that when the spectrum is hidden from coordinatewise second moments, the spectral oracle achieves lower tuned final risk (Table~\ref{tab:randomfeatures}).
+
+\begin{table}[t]
+\centering
+\caption{Random-feature/sketch wide learning-rate run.}
+\label{tab:randomfeatures}
+\begin{tabular}{llccc}
+\toprule
+case & optimizer & best LR & final risk & $q_{\rm eff}$ \\
+\midrule
+Gaussian sketch & Adam & 0.01 & $8.35\times10^{-4}$ & $-0.028$ \\
+Gaussian sketch & RMSProp & 0.01 & $1.52\times10^{-3}$ & $-0.032$ \\
+Gaussian sketch & Spectral oracle & 0.10 & $1.45\times10^{-4}$ & $0.500$ \\
+Haar & AdamW & 0.003 & $7.84\times10^{-4}$ & $-0.023$ \\
+Haar & RMSProp & 0.003 & $9.50\times10^{-4}$ & $-0.027$ \\
+Haar & Spectral oracle & 0.03 & $1.16\times10^{-4}$ & $0.500$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Related work}
+\paragraph{Scaling laws.} Empirical scaling laws have been studied across language modeling, generative modeling, and transfer \citep{hestness2017deep,rosenfeld2019constructive,kaplan2020scaling,henighan2020scaling,hernandez2021scaling,hoffmann2022training}.  Theoretical accounts connect power laws to kernel spectra, task-model alignment, and high-dimensional regression \citep{bordelon2020spectrum,canatar2021spectral,bahri2021explaining,lin2024scaling}.  The closest baseline is \citet{lin2024scaling}, who prove model/data/compute scaling laws for one-pass SGD in sketched linear regression.
+
+\paragraph{Adaptive optimization and preconditioning.} Adaptive and preconditioned methods include AdaGrad \citep{duchi2011adaptive}, RMSProp \citep{tieleman2012rmsprop}, Adam \citep{kingma2015adam}, AdamW \citep{loshchilov2019decoupled}, natural gradient \citep{amari1998natural}, K-FAC \citep{martens2015optimizing}, Shampoo \citep{gupta2018shampoo}, and large-scale second-order methods \citep{anil2020scalable}.  Prior theory often focuses on convergence, regret, or implicit bias \citep{reddi2018convergence,wilson2017marginal}.  We ask whether the preconditioner reshapes a power-law spectrum enough to change scaling exponents.
+
+\paragraph{Random features, kernels, and high-dimensional regression.} Random features and kernel approximations provide tractable models of feature learning and generalization \citep{rahimi2007random,rudi2017generalization,bach2017breaking,jacot2018neural}.  Power-law eigenspectra also appear in kernel learning curves and double descent \citep{belkin2019reconciling,hastie2022surprises,bartlett2020benign}.  Our results show that the same covariance spectrum can lead to different optimizer exponents depending on whether the feature coordinates expose the spectrum to coordinatewise second moments.
+
+\paragraph{Optimizer-dependent scaling.} Empirical work has emphasized that optimizer choice and hyperparameter transfer affect observed scaling behavior \citep{mccandlish2018empirical,smith2018bayesian,ramani2026optimizer}.  Our contribution is a theorem-level mechanism: the visible spectrum controls the exponent.
+
+\section{Limitations and scope}
+The theory is for Gaussian linear regression and feature-coordinate models.  Neural networks have non-Gaussian gradients, changing representations, normalization layers, and interactions between optimization and representation learning.  Our results should be read as a mechanistic scaling-law model, not a complete theory of deep learning.  Finite-time risk improvements can occur even when $q_{\rm eff}\approx0$; our claim concerns spectral scaling exponents, not all optimizer advantages.
+
+\section{Conclusion}
+Adaptive optimizers do not automatically change scaling laws.  They change scaling exponents when their coordinatewise second moments make the covariance spectrum visible.  The visible exponent $\theta$ determines $q_{\rm eff}=\theta/2$, which determines the learned-mode count, risk law, compute-optimal allocation, and AdamW decay schedule.
+
+\appendix
+\section{Proof details}
+\subsection{Source stability}\label{app:source}
+If $P=f(\Sigma)$ is spectral, then $\tSig=P^{1/2}\Sigma P^{1/2}=\Sigma f(\Sigma)$ and $u^\star=P^{-1/2}w^\star$.  For each eigenvector $v_i$,
+\[
+    \ts_i=\lambda_i f(\lambda_i)\left(f(\lambda_i)^{-1/2}\langle v_i,w^\star\rangle\right)^2=s_i.
+\]
+For invariant band decompositions, total source mass is preserved blockwise:
+\[
+    (P_\ell^{-1/2}w^\star_\ell)^\top(P_\ell^{1/2}\Sigma_\ell P_\ell^{1/2})(P_\ell^{-1/2}w^\star_\ell)=(w^\star_\ell)^\top\Sigma_\ell w^\star_\ell.
+\]
+
+\subsection{Risk filters}
+For two-slope spectra, integral comparison gives
+\[
+    \sum_{i\le M}\frac{\ts_i}{1+n\tmu_i}\asymp K(n)^{1-b}
+\]
+when $1<b<\alpha+1$ and $K(n)<M$.  If $\alpha>1/2$, then
+\[
+    \frac1{\Neff}\sum_{i\le M}\min\{1,n^2\tmu_i^2\}\asymp\frac{\min\{M,K(n)\}}{\Neff}.
+\]
+
+\subsection{Compute-optimal derivation}
+For fixed $N$, minimize $K^{1-b}+K/N$ under $K\le N^{1/\alpha}$.  The unconstrained optimum satisfies $K^{-b}\asymp N^{-1}$, hence $K\asymp N^{1/b}$.  If $b\le\alpha$, this exceeds the time cap, so $K\asymp N^{1/\alpha}$; otherwise $K\asymp N^{1/b}$.  Combining with $M=C/N$ and balancing $M^{1-b}$ against the optimized $N$ term yields Theorem~\ref{thm:compute}.
+
+\subsection{Diagnostic consistency}
+Suppose on a fitting window $i\in[L,U]$,
+\[
+    \lambda_i=c_\lambda i^{-a}e^{\varepsilon_i},\qquad
+    \mu_i=c_\mu i^{-\alpha}e^{\delta_i},
+\]
+with $|\varepsilon_i|,|\delta_i|\le\eta$.  Least-squares log-log slope estimates satisfy
+\[
+    |\widehat a-a|+|\widehat\alpha-\alpha|\lesssim\eta/\log(U/L).
+\]
+Thus $\widehat q=1-\widehat\alpha/\widehat a$ is consistent whenever $a$ is bounded away from zero and the fitting window has nontrivial logarithmic width.
+
+\subsection{Hidden-spectrum oracle separation}
+If coordinatewise adaptivity has $q_{\rm coord}=0$ while a spectral oracle has $q_{\rm spec}=1/2$, then with $\beta(q)=(b-1)/(\max\{a(1-q),b\}+1)$,
+\[
+    \frac{R^\star_{q=0}(C)-\sigma^2}{R^\star_{q=1/2}(C)-\sigma^2}\asymp C^{\beta(1/2)-\beta(0)}.
+\]
+Scalar learning-rate tuning rescales the effective horizon by a constant and cannot change $\beta(q)$.
+
+\begin{thebibliography}{99}
+\bibitem[Amari(1998)]{amari1998natural} Shun-ichi Amari. Natural gradient works efficiently in learning. \emph{Neural Computation}, 1998.
+\bibitem[Anil et~al.(2020)]{anil2020scalable} Rohan Anil, Vineet Gupta, Tomer Koren, and Yoram Singer. Scalable second order optimization for deep learning. \emph{arXiv:2002.09018}, 2020.
+\bibitem[Bach(2017)]{bach2017breaking} Francis Bach. Breaking the curse of dimensionality with convex neural networks. \emph{JMLR}, 2017.
+\bibitem[Bahri et~al.(2021)]{bahri2021explaining} Yasaman Bahri et al. Explaining neural scaling laws. \emph{arXiv:2102.06701}, 2021.
+\bibitem[Bartlett et~al.(2020)]{bartlett2020benign} Peter L. Bartlett et al. Benign overfitting in linear regression. \emph{PNAS}, 2020.
+\bibitem[Belkin et~al.(2019)]{belkin2019reconciling} Mikhail Belkin et al. Reconciling modern machine-learning practice and the classical bias-variance trade-off. \emph{PNAS}, 2019.
+\bibitem[Bordelon et~al.(2020)]{bordelon2020spectrum} Blake Bordelon, Abdulkadir Canatar, and Cengiz Pehlevan. Spectrum dependent learning curves in kernel regression and wide neural networks. \emph{ICML}, 2020.
+\bibitem[Canatar et~al.(2021)]{canatar2021spectral} Abdulkadir Canatar et al. Spectral bias and task-model alignment explain generalization. \emph{Nature Communications}, 2021.
+\bibitem[Duchi et~al.(2011)]{duchi2011adaptive} John Duchi, Elad Hazan, and Yoram Singer. Adaptive subgradient methods. \emph{JMLR}, 2011.
+\bibitem[Gupta et~al.(2018)]{gupta2018shampoo} Vineet Gupta, Tomer Koren, and Yoram Singer. Shampoo. \emph{ICML}, 2018.
+\bibitem[Hastie et~al.(2022)]{hastie2022surprises} Trevor Hastie et al. Surprises in high-dimensional ridgeless least squares interpolation. \emph{Annals of Statistics}, 2022.
+\bibitem[Henighan et~al.(2020)]{henighan2020scaling} Tom Henighan et al. Scaling laws for autoregressive generative modeling. \emph{arXiv:2010.14701}, 2020.
+\bibitem[Hernandez et~al.(2021)]{hernandez2021scaling} Danny Hernandez et al. Scaling laws for transfer. \emph{arXiv:2102.01293}, 2021.
+\bibitem[Hestness et~al.(2017)]{hestness2017deep} Joel Hestness et al. Deep learning scaling is predictable, empirically. \emph{arXiv:1712.00409}, 2017.
+\bibitem[Hoffmann et~al.(2022)]{hoffmann2022training} Jordan Hoffmann et al. Training compute-optimal large language models. \emph{arXiv:2203.15556}, 2022.
+\bibitem[Jacot et~al.(2018)]{jacot2018neural} Arthur Jacot et al. Neural tangent kernel. \emph{NeurIPS}, 2018.
+\bibitem[Kaplan et~al.(2020)]{kaplan2020scaling} Jared Kaplan et al. Scaling laws for neural language models. \emph{arXiv:2001.08361}, 2020.
+\bibitem[Kingma and Ba(2015)]{kingma2015adam} Diederik P. Kingma and Jimmy Ba. Adam. \emph{ICLR}, 2015.
+\bibitem[Lin et~al.(2024)]{lin2024scaling} Licong Lin et al. Scaling laws in linear regression. \emph{NeurIPS}, 2024.
+\bibitem[Lin et~al.(2025)]{lin2025datareuse} Licong Lin et al. Improved scaling laws in linear regression via data reuse. \emph{arXiv preprint}, 2025.
+\bibitem[Loshchilov and Hutter(2019)]{loshchilov2019decoupled} Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. \emph{ICLR}, 2019.
+\bibitem[Martens and Grosse(2015)]{martens2015optimizing} James Martens and Roger Grosse. Kronecker-factored approximate curvature. \emph{ICML}, 2015.
+\bibitem[McCandlish et~al.(2018)]{mccandlish2018empirical} Sam McCandlish et al. An empirical model of large-batch training. \emph{arXiv:1812.06162}, 2018.
+\bibitem[Rahimi and Recht(2007)]{rahimi2007random} Ali Rahimi and Benjamin Recht. Random features for large-scale kernel machines. \emph{NeurIPS}, 2007.
+\bibitem[Ramani and Jain(2026)]{ramani2026optimizer} Vansh Ramani and Shourya Vir Jain. On the optimizer dependence of neural scaling laws. \emph{Preprint}, 2026.
+\bibitem[Reddi et~al.(2018)]{reddi2018convergence} Sashank J. Reddi et al. On the convergence of Adam and beyond. \emph{ICLR}, 2018.
+\bibitem[Rosenfeld et~al.(2020)]{rosenfeld2019constructive} Jonathan S. Rosenfeld et al. A constructive prediction of the generalization error across scales. \emph{ICLR}, 2020.
+\bibitem[Rudi and Rosasco(2017)]{rudi2017generalization} Alessandro Rudi and Lorenzo Rosasco. Generalization properties of learning with random features. \emph{NeurIPS}, 2017.
+\bibitem[Smith and Le(2018)]{smith2018bayesian} Samuel L. Smith and Quoc V. Le. A Bayesian perspective on generalization and SGD. \emph{ICLR}, 2018.
+\bibitem[Tieleman and Hinton(2012)]{tieleman2012rmsprop} Tijmen Tieleman and Geoffrey Hinton. RMSProp lecture notes. \emph{COURSERA}, 2012.
+\bibitem[Wilson et~al.(2017)]{wilson2017marginal} Ashia C. Wilson et al. The marginal value of adaptive gradient methods. \emph{NeurIPS}, 2017.
+\end{thebibliography}
+\end{document}
